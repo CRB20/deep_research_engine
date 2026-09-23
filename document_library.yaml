@@ -1,0 +1,25 @@
+# Personal document RAG library.
+# Paths may be absolute (e.g. /home/hp/Documents/ROV_Control) or relative to
+# the deep_research_engine folder (as shown below).
+# New PDFs placed inside an existing project folder are discovered automatically.
+
+projects:
+  ROV_Control:
+    folders:
+      - "documents/ROV_Control"
+    recursive: true
+
+  AEROSUB:
+    folders:
+      - "documents/AEROSUB"
+    recursive: true
+
+  Thesis:
+    folders:
+      - "documents/Thesis"
+    recursive: true
+
+  General:
+    folders:
+      - "documents/General"
+    recursive: true

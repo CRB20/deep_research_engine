@@ -1,0 +1,27 @@
+# Core LangChain / Ollama stack
+langchain>=1.0.0
+langgraph>=1.0.0
+langchain-ollama>=1.0.0
+langchain-core>=1.0.0
+
+# Local/web research
+ollama>=0.6.0
+ddgs>=9.16.0
+requests>=2.32.0
+trafilatura>=2.0.0
+beautifulsoup4>=4.12.0
+rapidfuzz>=3.10.0
+python-dotenv>=1.0.0
+
+# Configuration / project metadata
+PyYAML>=6.0
+
+# Structured data and PDF generation/reading
+pydantic>=2.0.0
+reportlab>=4.2.0
+PyMuPDF>=1.24.0
+pypdf>=5.0.0
+pytesseract>=0.3.13
+Pillow>=10.0.0
+fonttools>=4.50.0
+

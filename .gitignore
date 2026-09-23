@@ -1,0 +1,39 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+
+# Local model files
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Runtime/generated data
+runs/
+followup_runs/
+quick_research_runs/
+conversation_sessions/
+rag_index/
+
+# Private documents and images
+documents/
+images/
+
+# Generated reports
+*.pdf
+
+# Logs
+*.log
+ollama.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
