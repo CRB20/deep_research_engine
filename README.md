@@ -365,8 +365,8 @@ Do not assume that a variable in one file changes the other application.
 For a fresh Ubuntu machine, the shortest supported setup is:
 
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_URL>
-cd <repository-directory>
+git clone https://github.com/CRB20/deep_research_engine.git
+cd deep_research_engine
 
 chmod +x setup.sh run_research.sh run_research_assistant.sh
 ./setup.sh
