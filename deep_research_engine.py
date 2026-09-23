@@ -348,11 +348,15 @@ class ResearchTask(BaseModel):
 
 
 class ResearchPlan(BaseModel):
-    title: str
-    research_question: str
+    # Planner metadata is deliberately tolerant. Local reasoning models can
+    # occasionally omit a non-essential field even when structured output is
+    # requested. The actual research tasks remain required because they drive
+    # the rest of the pipeline. Missing metadata is filled after parsing.
+    title: str = ""
+    research_question: str = ""
     tasks: list[ResearchTask]
-    date_scope: str
-    key_terms: list[str]
+    date_scope: str = ""
+    key_terms: list[str] = Field(default_factory=list)
 
 
 class QuerySet(BaseModel):
@@ -1914,12 +1918,34 @@ User research question:
 {question}
 
 Use the current date as the review cutoff. State a useful date scope in the plan.
+
+OUTPUT REQUIREMENTS:
+- Return the full ResearchPlan structure.
+- Every task MUST include both name and objective.
+- title, research_question, date_scope, and key_terms are useful metadata;
+  do not omit them when possible.
 """
-    return await invoke_with_progress(
+    plan = await invoke_with_progress(
         planner_llm,
         prompt,
         "QwQ research planner",
     )
+
+    # Normalize metadata omitted by local models. These fields do not determine
+    # the research decomposition, so their absence should never abort the run.
+    if not plan.title.strip():
+        plan.title = question.strip()[:180]
+    if not plan.research_question.strip():
+        plan.research_question = question.strip()
+    if not plan.date_scope.strip():
+        plan.date_scope = f"Up to {datetime.now().strftime('%Y-%m-%d')}"
+
+    # Tasks are the actual executable plan. Fail explicitly if the model returns
+    # no tasks rather than silently producing an empty research run.
+    if not plan.tasks:
+        raise RuntimeError("QwQ research planner returned no research tasks.")
+
+    return plan
 
 
 async def make_queries(task: ResearchTask, question: str, blind: bool = False) -> QuerySet:
