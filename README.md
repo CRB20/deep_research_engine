@@ -380,7 +380,7 @@ chmod +x setup.sh run_research.sh run_research_assistant.sh
 Replace the repository URL with your GitHub repository:
 
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_URL>
+git clone [<YOUR_GITHUB_REPOSITORY_URL>](https://github.com/CRB20/deep_research_engine.git)
 cd deep_research_engine
 ```
 
