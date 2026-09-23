@@ -399,6 +399,8 @@ ls
 You should see at least:
 
 ```text
+.env.deep_research_engine
+.env.research_assistant
 deep_research_engine.py
 research_assistant.py
 requirements.txt
