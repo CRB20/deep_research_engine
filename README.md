@@ -603,40 +603,6 @@ python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-Verify Python:
-
-```bash
-which python
-```
-
-It should point to:
-
-```text
-.../deep_research_engine/.venv/bin/python
-```
-
-## 6.4 Verify PDF/OCR dependencies
-
-The current RAG pipeline uses:
-
-- `pypdf`
-- `PyMuPDF`
-- `pytesseract`
-- `Pillow`
-- `fonttools`
-- Tesseract OCR on Ubuntu
-
-Check:
-
-```bash
-tesseract --version
-```
-
-Then run:
-
-```bash
-python -c "import yaml, pymupdf, pypdf, pytesseract, PIL, fontTools; print('PDF/OCR dependencies OK')"
-```
 
 ## 6.5 Verify the Deep Research Engine
 
@@ -664,7 +630,7 @@ This validates the Research Assistant's configuration, paths, Ollama connectivit
 Deep Research Engine:
 
 ```bash
-./run_research.sh --help
+./run_research.sh
 ```
 
 Research Assistant:
@@ -813,7 +779,7 @@ Research Assistant
     └── lightweight web follow-up
 ```
 
-Combining all configuration into one `.env` makes tuning and troubleshooting much harder.
+Combining all configurations into one `.env` makes tuning and troubleshooting much harder.
 
 ---
 
@@ -926,7 +892,7 @@ web deep-read               enabled
 
 Important:
 
-**150 candidate papers does not mean the engine fully reads 150 papers.**
+**150 candidate papers do not mean the engine fully reads 150 papers.**
 
 The engine first builds a broad candidate corpus, deduplicates/ranks it, and then deeply analyses the top configured subset.
 
@@ -946,7 +912,7 @@ Top 50 deep-read
 evidence cards
 ```
 
-The minimum is a target for unique candidates where the literature supports that volume. The engine does not fabricate or pad the corpus.
+The minimum is a target for unique candidates, where the literature supports that volume. The engine does not fabricate or pad the corpus.
 
 ## 10.4 Short mode
 
@@ -3659,4 +3625,4 @@ The important architectural rule is:
 
 > **Deep Research creates durable evidence; the Research Assistant uses that evidence interactively.**
 
-The two applications therefore complement rather than duplicate each other.
+The two applications, therefore, complement rather than duplicate each other.
