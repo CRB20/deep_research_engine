@@ -9,7 +9,7 @@ This repository contains two related but separate applications:
 
 Both applications use the same workspace and the same local Ollama service, but they have **separate configuration files, workflows, and responsibilities**.
 
-> **Current deployment model:** terminal only. No web UI, cloud backend, SSH service, reverse proxy, or remote-access layer is required by this repository.
+> **Current deployment model:** terminal only.
 
 ---
 
