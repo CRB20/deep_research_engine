@@ -356,11 +356,14 @@ class ResearchPlan(BaseModel):
 
 
 class QuerySet(BaseModel):
-    academic_queries: list[str]
-    web_queries: list[str]
-    youtube_queries: list[str]
-    alternate_terminology: list[str]
-    source_types_to_seek: list[str]
+    # Search-strategy output is deliberately tolerant. Local models can occasionally
+    # return only the academic query list even when the full schema is requested.
+    # Missing auxiliary fields should not terminate an otherwise healthy run.
+    academic_queries: list[str] = Field(default_factory=list)
+    web_queries: list[str] = Field(default_factory=list)
+    youtube_queries: list[str] = Field(default_factory=list)
+    alternate_terminology: list[str] = Field(default_factory=list)
+    source_types_to_seek: list[str] = Field(default_factory=list)
 
 
 class SourceDecision(BaseModel):
@@ -1876,20 +1879,31 @@ BROWSER_TOOLS = [search_web, open_web_page, open_pdf]
 PLANNER_PROMPT = """
 You are the lead scientist planning a deep literature review.
 
-Create 6-10 independent research tasks. Each task must cover a distinct evidence domain.
-For technical research, separate:
-- core methods and theory
-- competing methods
+Create 6-10 independent research tasks specifically derived from the user's research question.
+First identify the major methodological, theoretical, application, evaluation, limitation,
+and emerging-work dimensions that are actually relevant to the question.
+
+Do NOT force a predefined taxonomy or repeat the same generic categories for every topic.
+The example dimensions below are optional guidance only; use them only when they materially
+help answer the specific question:
+- methods/theory
+- competing approaches
 - applications
 - disturbances/failure modes
 - experimental validation
 - sensing/estimation
-- limitations and reproducibility
-- recent and emerging work
-- adjacent fields if useful
+- limitations/reproducibility
+- recent/emerging work
+- adjacent fields
 
-Do not create duplicate tasks. Make the tasks precise enough that different researchers can work independently.
+For some questions, several of these dimensions may be irrelevant, while other dimensions
+may be much more important. Add question-specific tasks when needed.
+
+Do not create duplicate or merely overlapping tasks.
+Make each task precise enough that different researchers can work independently.
+Prefer complementary tasks that collectively cover the user's question with minimal redundancy.
 """
+
 
 
 async def plan_research(question: str) -> ResearchPlan:
@@ -1949,14 +1963,35 @@ Prefer clear natural-language queries. Use Boolean operators only when their gro
 Do not create queries that are so broad that they mostly retrieve irrelevant records.
 
 The blind pass must deliberately search for concepts that may not appear in the first-pass vocabulary.
-Return at least {SEARCH_QUERY_COUNT} academic queries and {WEB_QUERY_COUNT} web queries.
+Return no more than {SEARCH_QUERY_COUNT} academic queries and no more than {WEB_QUERY_COUNT} web queries.
+Prefer exactly those counts when enough distinct queries are available.
+Return [] for any field that is not useful for this task rather than omitting the field.
+Keep queries diverse and task-specific; do not pad with repetitive variations.
+
+The structured result contains these fields:
+- academic_queries
+- web_queries
+- youtube_queries
+- alternate_terminology
+- source_types_to_seek
+
+Populate every field. Use an empty list when a field is not applicable.
 """
     result = await invoke_with_progress(
         search_strategist_llm,
         prompt,
         f"Qwen3.5 search strategy: {task.name}",
     )
-    return result
+
+    # Normalize list fields so imperfect local-model output cannot propagate
+    # malformed values into the harvesting stage.
+    return QuerySet(
+        academic_queries=[str(x).strip() for x in (result.academic_queries or []) if str(x).strip()],
+        web_queries=[str(x).strip() for x in (result.web_queries or []) if str(x).strip()],
+        youtube_queries=[str(x).strip() for x in (result.youtube_queries or []) if str(x).strip()],
+        alternate_terminology=[str(x).strip() for x in (result.alternate_terminology or []) if str(x).strip()],
+        source_types_to_seek=[str(x).strip() for x in (result.source_types_to_seek or []) if str(x).strip()],
+    )
 
 
 async def decide_sources(task: ResearchTask, question: str) -> SourceDecision:
