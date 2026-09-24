@@ -1,4 +1,4 @@
-# Local Deep Research Engine + Research Assistant
+# Local Deep Research Engine + Research Assistant + Research Reviewer
 
 A **fully local, terminal-based research system** built around Ollama and large open-weight language models.
 
@@ -35,6 +35,11 @@ All three applications use the same workspace and local Ollama service, but have
   - [6.6 Verify the Research Assistant](#66-verify-the-research-assistant)
   - [6.7 Start the applications](#67-start-the-applications)
 - [7. Ollama setup](#7-ollama-setup)
+  - [7.1 Shared model-service topology](#71-shared-model-service-topology)
+  - [7.2 Deep Research Engine model path](#72-deep-research-engine-model-path)
+  - [7.3 Research Assistant model path](#73-research-assistant-model-path)
+  - [7.4 Research Reviewer model path](#74-research-reviewer-model-path)
+  - [7.5 Local endpoint](#75-local-endpoint)
 - [8. Python environment and dependencies](#8-python-environment-and-dependencies)
 - [9. Configuration files](#9-configuration-files)
   - [9.1 Deep Research Engine](#91-deep-research-engine)
@@ -820,7 +825,7 @@ Research Assistant:
 
 # 7. Ollama setup
 
-Ollama is the shared local model server for **all three applications**. Each application can use a different model for a different role, but requests are sent through the same local API.
+Ollama is the shared local model server for **all three applications**. Each application keeps its own role routing, prompts, context sizes, output budgets, and failure-recovery policy while using the same local API.
 
 ## 7.1 Shared model-service topology
 
@@ -830,24 +835,99 @@ flowchart TB
     RA[Research Assistant] --> API
     RR[Research Reviewer] --> API
 
-    API --> QWQ[QwQ 32B<br/>reasoning / critique / arbitration]
-    API --> Q35[Qwen3.5 35B-A3B<br/>research / extraction / general review]
-    API --> Q3[Qwen3 32B<br/>long-form synthesis]
+    API --> QWQ[QwQ 32B<br/>reasoning / planning / critique / arbitration]
+    API --> Q35[Qwen3.5 35B-A3B<br/>research / extraction / analysis / answers]
+    API --> Q3[Qwen3 32B<br/>long-form synthesis / report writing]
     API --> Q38[Qwen3.8 27B<br/>vision / visual evidence]
 
-    QWQ --> D1[Deep Research planning + critique]
-    QWQ --> R1[Reviewer technical / equation / coordinator / hostile / final]
+    QWQ --> D1[Deep Research planning + critique + final review]
+    QWQ --> R1[Reviewer technical + equations + coordinator + hostile + final]
     Q35 --> D2[Deep Research search + paper analysis]
-    Q35 --> A1[Assistant answers]
+    Q35 --> A1[Assistant answers / query planning]
     Q35 --> R2[Reviewer specialist analysis]
-    Q3 --> D3[Deep Research final writing]
-    Q38 --> A2[Assistant image evidence]
+    Q3 --> D3[Deep Research synthesis + final writing]
+    Q38 --> A2[Assistant visual evidence]
     Q38 --> R3[Reviewer visual / figure evidence]
 ```
 
-## 7.2 Research Reviewer model path
+## 7.2 Deep Research Engine model path
 
-The Reviewer uses the same Ollama service but keeps its own role routing and recovery policy:
+The Deep Research Engine routes different research stages to different model families rather than asking one model to perform the entire research workload.
+
+```mermaid
+flowchart LR
+    Q[Research question] --> PLAN[QwQ 32B<br/>planning]
+    PLAN --> DISC[Qwen3.5 35B-A3B<br/>search / extraction / deep analysis]
+    DISC --> CRIT[QwQ 32B<br/>adversarial review / gap planning]
+    CRIT --> GAP[Qwen3.5 35B-A3B<br/>blind-gap + post-gap analysis]
+    GAP --> SYN[Qwen3 32B<br/>hierarchical synthesis / writing]
+    SYN --> FINAL[QwQ 32B<br/>final scientific review]
+    FINAL --> PDF[Verified PDF]
+
+    FAIL[LLM / provider failure] --> REC[Engine recovery layer]
+    REC --> LLM[LLM retries + timeout / heartbeat handling]
+    REC --> PROVIDER[Provider retries / backoff / fail-soft]
+    REC --> REPAIR[Report repair / final validation]
+```
+
+The model responsibilities are deliberately separated:
+
+```text
+QwQ 32B
+    → planning, adversarial critique, gap reasoning, final scientific review
+
+Qwen3.5 35B-A3B
+    → search strategy, source extraction, paper analysis, post-gap analysis
+
+Qwen3 32B
+    → long-form synthesis and final report writing
+```
+
+## 7.3 Research Assistant model path
+
+The Research Assistant is interactive and chooses its evidence path according to the selected intention. Qwen3.5 remains the main answer model; Qwen3.8 is used for visual evidence and is kept serial with the final answer stage.
+
+```mermaid
+flowchart LR
+    U[User question] --> INT[Chat / Research / Document understanding]
+
+    INT --> CHAT[Conversation memory]
+    INT --> DOC[Local document RAG]
+    INT --> RES[Saved research runs]
+    INT --> WEB[Optional fresh web search]
+    INT --> IMG[Attached image]
+
+    IMG --> V[Qwen3.8 27B<br/>visual evidence]
+    CHAT --> Q35[Qwen3.5 35B-A3B<br/>final answer]
+    DOC --> Q35
+    RES --> Q35
+    WEB --> Q35
+    V --> Q35
+
+    Q35 --> OUT[Interactive answer + trace]
+
+    FAIL[Runtime / source failure] --> REC[Assistant recovery layer]
+    REC --> LLMR[Local-model failure handling / session preservation]
+    REC --> WEBR[Web failure → continue from available local evidence]
+    REC --> OCR[Native PDF extraction → OCR fallback]
+    REC --> EMB[Embedding failure → lexical retrieval fallback]
+```
+
+The image path is deliberately serial:
+
+```text
+Qwen3.8 visual analysis
+        ↓
+visual evidence report
+        ↓
+Qwen3.5 final reasoning
+```
+
+This prevents the vision model from competing unnecessarily with the main answer model for GPU/RAM resources.
+
+## 7.4 Research Reviewer model path
+
+The Reviewer uses the same Ollama service but keeps its own specialist routing and recovery policy:
 
 ```mermaid
 flowchart LR
@@ -869,7 +949,9 @@ flowchart LR
     REC --> TRANSIENT[Connection / 429 / 5xx<br/>backoff + retry]
 ```
 
-## 7.3 Local endpoint
+The Reviewer is deliberately more recovery-aware because a complete paper/thesis review can run for hours and should not lose an entire specialist pass because of a single local inference failure.
+
+## 7.5 Local endpoint
 
 The default Ollama endpoint is:
 
@@ -877,11 +959,9 @@ The default Ollama endpoint is:
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 ```
 
-The Research Assistant and the local Deep Research workflow therefore assume Ollama is running on the same machine.
+All three applications therefore assume Ollama is running on the same machine.
 
 Do not expose port `11434` directly to the Internet.
-
----
 
 # 8. Python environment and dependencies
 
