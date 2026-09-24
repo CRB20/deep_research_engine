@@ -1910,6 +1910,32 @@ Prefer complementary tasks that collectively cover the user's question with mini
 
 
 
+def clean_plan_title(title: str, question: str, max_chars: int = 320) -> str:
+    """Normalize a model-generated report title and remove accidental repetition."""
+    title = re.sub(r"\s+", " ", str(title or "")).strip()
+    if not title:
+        title = re.sub(r"\s+", " ", question or "").strip()
+
+    # Local reasoning models can occasionally repeat the same trailing phrase
+    # many times. Collapse adjacent repeated word-blocks while preserving the
+    # first occurrence so a legitimate title is left intact.
+    words = title.split()
+    changed = True
+    while changed and len(words) >= 10:
+        changed = False
+        max_block = min(80, len(words) // 2)
+        for block_len in range(max_block, 4, -1):
+            if words[-2 * block_len:-block_len] == words[-block_len:]:
+                del words[-block_len:]
+                changed = True
+                break
+
+    cleaned = " ".join(words).strip(" \t\r\n")
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rsplit(" ", 1)[0].rstrip(" .,:;-")
+    return cleaned or re.sub(r"\s+", " ", question or "").strip()[:max_chars]
+
+
 async def plan_research(question: str) -> ResearchPlan:
     prompt = f"""
 {PLANNER_PROMPT}
@@ -1931,10 +1957,10 @@ OUTPUT REQUIREMENTS:
         "QwQ research planner",
     )
 
-    # Normalize metadata omitted by local models. These fields do not determine
-    # the research decomposition, so their absence should never abort the run.
-    if not plan.title.strip():
-        plan.title = question.strip()[:180]
+    # Normalize metadata omitted or corrupted by local models. These fields do
+    # not determine the research decomposition, so their absence/corruption
+    # should never abort or distort the actual research run.
+    plan.title = clean_plan_title(plan.title, question)
     if not plan.research_question.strip():
         plan.research_question = question.strip()
     if not plan.date_scope.strip():
