@@ -2,12 +2,13 @@
 
 A **fully local, terminal-based research system** built around Ollama and large open-weight language models.
 
-This repository contains two related but separate applications:
+This repository contains three related but separate applications:
 
 1. **Deep Research Engine** — a multi-pass literature and web research agent that plans a research problem, searches scholarly and technical sources, builds an evidence corpus, performs adversarial review and gap searching, synthesizes the evidence, reviews the final report, and exports a verified PDF.
 2. **Research Assistant** — an interactive local chatbot that can work in normal chat, research-follow-up, and document-understanding modes. It can use saved deep-research runs, fresh web search, a local PDF/DOCX/TXT/Markdown RAG library, and multimodal image understanding through Qwen3.8.
+3. **Research Reviewer** — an independent multi-agent academic document reviewer for papers, theses, reports, and proposals. It combines specialist review agents, visual/math analysis, citation/literature checks, adaptive coordinator-driven re-review, hostile Reviewer #2 analysis, language/academic-voice analysis, and a final senior arbiter, with persistent review sessions and recovery-aware local inference.
 
-Both applications use the same workspace and the same local Ollama service, but they have **separate configuration files, workflows, and responsibilities**.
+All three applications use the same workspace and local Ollama service, but have **separate configuration files, workflows, and responsibilities**.
 
 > **Current deployment model:** terminal only.
 
@@ -18,12 +19,27 @@ Both applications use the same workspace and the same local Ollama service, but 
 - [1. System overview](#1-system-overview)
 - [2. What is included](#2-what-is-included)
 - [3. Hardware and software assumptions](#3-hardware-and-software-assumptions)
+  - [3.1 Current reference hardware](#31-current-reference-hardware)
+  - [3.2 Required software](#32-required-software)
 - [4. Required local models](#4-required-local-models)
+  - [4.1 Deep Research Engine models](#41-deep-research-engine-models)
+  - [4.2 Research Assistant models](#42-research-assistant-models)
+  - [4.3 Research Reviewer models](#43-research-reviewer-models)
+  - [4.4 Why the vision model is separate](#44-why-the-vision-model-is-separate)
 - [5. Repository layout](#5-repository-layout)
 - [6. Installation from a fresh machine](#6-installation-from-a-fresh-machine)
+  - [6.1 Clone the repository](#61-clone-the-repository)
+  - [6.2 Recommended: run the automated setup script](#62-recommended-run-the-automated-setup-script)
+  - [6.3 Manual installation](#63-manual-installation)
+  - [6.5 Verify the Deep Research Engine](#65-verify-the-deep-research-engine)
+  - [6.6 Verify the Research Assistant](#66-verify-the-research-assistant)
+  - [6.7 Start the applications](#67-start-the-applications)
 - [7. Ollama setup](#7-ollama-setup)
 - [8. Python environment and dependencies](#8-python-environment-and-dependencies)
 - [9. Configuration files](#9-configuration-files)
+  - [9.1 Deep Research Engine](#91-deep-research-engine)
+  - [9.2 Research Assistant](#92-research-assistant)
+  - [9.3 Why configuration is split](#93-why-configuration-is-split)
 - [10. Deep Research Engine](#10-deep-research-engine)
   - [10.1 Purpose](#101-purpose)
   - [10.2 Model roles](#102-model-roles)
@@ -51,29 +67,78 @@ Both applications use the same workspace and the same local Ollama service, but 
   - [11.11 Deep Research integration](#1111-deep-research-integration)
   - [11.12 Terminal command reference](#1112-terminal-command-reference)
   - [11.13 Assistant environment variables](#1113-assistant-environment-variables)
-- [12. Document library setup](#12-document-library-setup)
-- [13. Image library setup](#13-image-library-setup)
-- [14. Running both applications](#14-running-both-applications)
-- [15. Recommended configuration for a 16 GB GPU](#15-recommended-configuration-for-a-16-gb-gpu)
-- [16. API keys and optional providers](#16-api-keys-and-optional-providers)
-- [17. Understanding generated data](#17-understanding-generated-data)
-- [18. GitHub and moving the system to another machine](#18-github-and-moving-the-system-to-another-machine)
-- [19. Recommended `.gitignore`](#19-recommended-gitignore)
-- [20. Troubleshooting](#20-troubleshooting)
-- [21. Typical workflows](#21-typical-workflows)
-- [22. Design principles and limitations](#22-design-principles-and-limitations)
-- [23. Future extension points](#23-future-extension-points)
-
----
+- [12. Research Reviewer](#12-research-reviewer)
+  - [12.1 Purpose](#121-purpose)
+  - [12.2 Architecture](#122-architecture)
+  - [12.3 Model roles](#123-model-roles)
+  - [12.4 Review workflow](#124-review-workflow)
+  - [12.5 Specialist review coverage](#125-specialist-review-coverage)
+  - [12.6 Adaptive coordinator and targeted re-review](#126-adaptive-coordinator-and-targeted-re-review)
+  - [12.7 Reviewer #2 / hostile review](#127-reviewer-2-hostile-review)
+  - [12.8 Language, academic voice and AI-style signals](#128-language-academic-voice-and-ai-style-signals)
+  - [12.9 Visual, equation and numerical review](#129-visual-equation-and-numerical-review)
+  - [12.10 Citation and literature verification](#1210-citation-and-literature-verification)
+  - [12.11 Review sessions and resume](#1211-review-sessions-and-resume)
+  - [12.12 Reviewer PDF library](#1212-reviewer-pdf-library)
+  - [12.13 Reviewer command reference](#1213-reviewer-command-reference)
+  - [12.14 Reviewer environment variables](#1214-reviewer-environment-variables)
+  - [12.15 Ollama failure-recovery architecture](#1215-ollama-failure-recovery-architecture)
+  - [12.16 Web and Crossref reliability](#1216-web-and-crossref-reliability)
+  - [12.17 Reviewer outputs](#1217-reviewer-outputs)
+  - [12.18 Self-test and launch](#1218-self-test-and-launch)
+- [13. Document library setup](#13-document-library-setup)
+- [14. Image library setup](#14-image-library-setup)
+- [15. Running all three applications](#15-running-all-three-applications)
+  - [15.1 Deep Research Engine](#151-deep-research-engine)
+  - [15.2 Research Assistant](#152-research-assistant)
+  - [15.3 Research Reviewer](#153-research-reviewer)
+- [16. Recommended configuration for a 16 GB GPU](#16-recommended-configuration-for-a-16-gb-gpu)
+- [17. API keys and optional providers](#17-api-keys-and-optional-providers)
+- [18. Understanding generated data](#18-understanding-generated-data)
+  - [18.1 Deep Research `runs/`](#181-deep-research-runs)
+  - [18.2 Research Assistant `followup_runs/`](#182-research-assistant-followupruns)
+  - [18.3 `rag_index/`](#183-ragindex)
+  - [18.4 Conversation sessions](#184-conversation-sessions)
+  - [18.5 Research Reviewer `review_sessions/`](#185-research-reviewer-reviewsessions)
+- [19. GitHub and moving the system to another machine](#19-github-and-moving-the-system-to-another-machine)
+  - [19.1 What belongs in Git](#191-what-belongs-in-git)
+  - [19.2 Recommended fresh-machine migration](#192-recommended-fresh-machine-migration)
+  - [19.3 What you still configure manually](#193-what-you-still-configure-manually)
+  - [19.4 Manual fallback](#194-manual-fallback)
+  - [19.5 Hardware-specific configuration](#195-hardware-specific-configuration)
+- [20. Recommended `.gitignore`](#20-recommended-gitignore)
+- [21. Troubleshooting](#21-troubleshooting)
+- [22. Typical workflows](#22-typical-workflows)
+  - [22.1 Quick everyday Chat](#221-quick-everyday-chat)
+  - [22.2 Current information question](#222-current-information-question)
+  - [22.3 Ask about a book/PDF](#223-ask-about-a-bookpdf)
+  - [22.4 Ask about your own project documents](#224-ask-about-your-own-project-documents)
+  - [22.5 Ask about a technical image](#225-ask-about-a-technical-image)
+  - [22.6 Ask a question about an image and a PDF](#226-ask-a-question-about-an-image-and-a-pdf)
+  - [22.7 Continue a completed Deep Research run](#227-continue-a-completed-deep-research-run)
+  - [22.8 Start a new research topic](#228-start-a-new-research-topic)
+  - [22.9 Launch Deep Research from the assistant](#229-launch-deep-research-from-the-assistant)
+  - [22.10 Review a paper or thesis](#2210-review-a-paper-or-thesis)
+  - [22.10 Run a full literature review directly](#2210-run-a-full-literature-review-directly)
+  - [22.11 Pilot a complex pipeline first](#2211-pilot-a-complex-pipeline-first)
+- [23. Design principles and limitations](#23-design-principles-and-limitations)
+  - [23.1 Local-first](#231-local-first)
+  - [23.2 Evidence-aware answers](#232-evidence-aware-answers)
+  - [23.3 Fail-soft retrieval](#233-fail-soft-retrieval)
+  - [23.4 Separate perception from reasoning](#234-separate-perception-from-reasoning)
+  - [23.5 Separate research from interactive assistance](#235-separate-research-from-interactive-assistance)
+  - [23.6 Current limitations](#236-current-limitations)
+- [24. Future extension points](#24-future-extension-points)
 
 # 1. System overview
 
-The project is deliberately divided into a **research engine** and an **interactive research assistant**.
+The project is deliberately divided into a **research engine**, an **interactive research assistant**, and an **independent research reviewer**.
 
 ```mermaid
 flowchart TB
     U[User] --> RA[Research Assistant]
     U --> DRE[Deep Research Engine]
+    U --> RR[Research Reviewer]
 
     RA -->|normal chat| Q35[Qwen3.5 35B-A3B]
     RA -->|image analysis| VISION[Qwen3.8 27B]
@@ -99,12 +164,23 @@ flowchart TB
     PLAN --> DISC
     DISC --> SYNTH
     SYNTH --> PDF[Verified PDF]
+
+    RR --> QWQR[QwQ 32B]
+    RR --> Q35R[Qwen3.5 35B-A3B]
+    RR --> Q38R[Qwen3.8 27B]
+    QWQR --> COORD[Coordinator / Hostile / Final Arbitration]
+    Q35R --> SPEC[Specialist Review]
+    Q38R --> VIS[Visual / Figure / Equation Evidence]
+    SPEC --> COORD
+    VIS --> COORD
+    COORD --> REVIEW[Integrated Review]
 ```
 
 The key distinction is:
 
 - **Deep Research Engine:** starts with a research question and constructs a new research corpus and final report.
 - **Research Assistant:** starts with an interactive conversation and uses existing research, local documents, web evidence, and images as optional context.
+- **Research Reviewer:** starts with a user-supplied PDF and performs a structured, multi-agent scientific/academic review of that document; it is intentionally independent of the other two applications.
 
 ---
 
@@ -116,6 +192,9 @@ A typical repository contains at least:
 deep_research_engine/
 ├── deep_research_engine.py
 ├── research_assistant.py
+├── research_reviewer.py
+├── run_research_reviewer.sh
+├── .env.research_reviewer.example
 ├── requirements.txt
 ├── document_library.yaml
 ├── run_research.sh
@@ -143,6 +222,8 @@ deep_research_engine/
 ├── quick_research_runs/             # Research Assistant quick/new-topic traces
 ├── conversation_sessions/           # persistent assistant conversations
 ├── rag_index/                       # local document RAG SQLite database
+├── reviewer PDFs/                   # PDFs selected for academic review
+├── review_sessions/                 # persistent Research Reviewer sessions
 └── *.pdf                            # final Deep Research PDF reports
 ```
 
@@ -279,7 +360,27 @@ RAG_EMBEDDINGS_ENABLED=false
 
 so the RAG system can run using lexical/BM25-style retrieval without a separate embedding model.
 
-## 4.3 Why the vision model is separate
+## 4.3 Research Reviewer models
+
+The Research Reviewer reuses the same local model families and adds dedicated role assignments:
+
+| Model | Reviewer role |
+|---|---|
+| `qwen3.5:35b-a3b` | General/micro review, language, style, AI-style signal analysis, data/citation/literature specialist work |
+| `qwq:32b` | Technical accuracy, equations, statistics, reproducibility, novelty, coordinator, hostile Reviewer #2, final senior arbiter |
+| `qwen3.8:27b` | Visual review of figures, plots, tables, diagrams and equation pages |
+
+No additional model family is required beyond the models already used elsewhere in the repository.
+
+The reviewer launcher expects the following models to be available:
+
+```bash
+ollama pull qwq:32b
+ollama pull qwen3.5:35b-a3b
+ollama pull qwen3.8:27b
+```
+
+## 4.4 Why the vision model is separate
 
 The image pipeline is deliberately serial:
 
@@ -332,6 +433,15 @@ run_research.sh
 run_research_assistant.sh
     └── Research Assistant launcher
 
+run_research_reviewer.sh
+    └── Research Reviewer launcher; creates reviewer directories and local reviewer env on first run
+
+research_reviewer.py
+    └── independent multi-agent academic document reviewer
+
+.env.research_reviewer.example
+    └── reviewer configuration template
+
 document_library.yaml
     └── document-project definitions
 
@@ -368,7 +478,7 @@ For a fresh Ubuntu machine, the shortest supported setup is:
 git clone https://github.com/CRB20/deep_research_engine.git
 cd deep_research_engine
 
-chmod +x setup.sh run_research.sh run_research_assistant.sh
+chmod +x setup.sh run_research.sh run_research_assistant.sh run_research_reviewer.sh
 ./setup.sh
 ```
 
@@ -401,6 +511,7 @@ You should see at least:
 ```text
 .env.deep_research_engine
 .env.research_assistant
+.env.research_reviewer
 deep_research_engine.py
 research_assistant.py
 requirements.txt
@@ -542,6 +653,7 @@ After setup, create your local configuration files:
 ```text
 .env.deep_research_engine
 .env.research_assistant
+.env.research_reviewer
 ```
 
 from the repository's example/template files when those templates are provided.
@@ -2308,7 +2420,1084 @@ RESEARCH_USER_AGENT=LocalResearchAssistant/1.0 (personal academic research tool)
 
 ---
 
-# 12. Document library setup
+
+# 12. Research Reviewer
+
+## 12.1 Purpose
+
+The **Research Reviewer** is a separate application for rigorous academic review of a user-supplied PDF.
+
+It is designed for:
+
+- research papers and journal manuscripts
+- theses and dissertations
+- research proposals
+- technical reports
+- other academic/technical documents
+
+Unlike the Deep Research Engine, which starts from a research question, the Research Reviewer starts from an existing document and asks:
+
+```text
+What is wrong, weak, unclear, unsupported, inconsistent, unverifiable,
+or improvable in this document?
+```
+
+The reviewer is intentionally multi-agent. It does not rely on one model to do everything.
+
+It combines:
+
+```text
+document ingestion
+      ↓
+micro / section review
+      ↓
+technical / mathematical / visual / data checks
+      ↓
+language / citation / literature / novelty / reproducibility checks
+      ↓
+adaptive coordinator
+      ↓
+targeted second passes
+      ↓
+Reviewer #2 / hostile pass
+      ↓
+post-hostile coordination
+      ↓
+senior final arbiter
+      ↓
+persistent integrated review
+```
+
+The reviewer is independent from the Deep Research Engine and Research Assistant.
+
+## 12.2 Architecture
+
+The high-level architecture is:
+
+```mermaid
+flowchart TD
+    PDF[User PDF] --> INGEST[PDF extraction + page map]
+    INGEST --> CHUNKS[Line-addressed page chunks]
+    INGEST --> VISP[Rendered visual/math pages]
+
+    CHUNKS --> MICRO[Micro / paragraph review]
+    CHUNKS --> SECTION[Section quality]
+    CHUNKS --> TECH[Technical accuracy]
+    CHUNKS --> DATA[Data / numerical consistency]
+    CHUNKS --> LANGUAGE[Language / academic voice]
+    CHUNKS --> LIT[Literature gap analysis]
+    CHUNKS --> NOV[Novelty / contribution]
+    CHUNKS --> REPRO[Reproducibility]
+    CHUNKS --> EXP[Experimental design]
+    CHUNKS --> VENUE[Venue suitability]
+    CHUNKS --> FRONT[Title / abstract / keywords]
+    CHUNKS --> NOM[Nomenclature / units]
+
+    VISP --> VISION[Qwen3.8 visual review]
+    VISP --> EQUATION[Equation / mathematics review]
+
+    CHUNKS --> CIT[Citation / bibliography verification]
+    CIT --> CROSSREF[Crossref evidence]
+    LIT --> WEB[Web discovery]
+
+    MICRO --> COORD[QwQ Coordinator]
+    SECTION --> COORD
+    TECH --> COORD
+    DATA --> COORD
+    LANGUAGE --> COORD
+    LIT --> COORD
+    NOV --> COORD
+    REPRO --> COORD
+    EXP --> COORD
+    VENUE --> COORD
+    FRONT --> COORD
+    NOM --> COORD
+    VISION --> COORD
+    EQUATION --> COORD
+    CIT --> COORD
+
+    COORD --> TARGET[Targeted specialist re-review]
+    TARGET --> COORD
+
+    COORD --> HOSTILE[Reviewer #2 / Hostile Review]
+    HOSTILE --> COORD2[Post-hostile coordination]
+
+    COORD2 --> ARBITER[Senior Final Arbiter]
+    ARBITER --> FINAL[Integrated Review]
+```
+
+The coordinator does not replace the specialist agents. Its purpose is to decide where another focused pass is worth the additional computation.
+
+## 12.3 Model roles
+
+The default reviewer assignments are:
+
+| Model | Role |
+|---|---|
+| `qwen3.5:35b-a3b` | General, micro, section, data, citation, literature planning, language, academic-voice and AI-style signal analysis |
+| `qwq:32b` | Technical correctness, equations, statistics, reproducibility, novelty, coordinator, hostile Reviewer #2 and final arbitration |
+| `qwen3.8:27b` | Page-image analysis for figures, plots, tables, diagrams and equation rendering |
+
+The reviewer deliberately uses different models for different jobs.
+
+The intent is:
+
+```text
+Qwen3.5
+    ↓
+high-volume document inspection
+
+Qwen3.8
+    ↓
+visual evidence extraction
+
+QwQ
+    ↓
+deep scientific reasoning and arbitration
+```
+
+For the current RTX 5000 Ada 16 GB reference machine, QwQ 32B may be partially CPU-offloaded. The reviewer therefore keeps large-model recovery and concurrency conservative.
+
+## 12.4 Review workflow
+
+A new review always begins by selecting a PDF from:
+
+```text
+reviewer PDFs/
+```
+
+The standard workflow is:
+
+```text
+1. Select PDF
+       ↓
+2. Detect document type
+       ↓
+3. Create persistent review session
+       ↓
+4. Extract page text and line references
+       ↓
+5. Detect visual/math pages
+       ↓
+6. Run specialist review passes
+       ↓
+7. Run adaptive coordinator
+       ↓
+8. Run targeted second passes
+       ↓
+9. Run Reviewer #2 / hostile review
+       ↓
+10. Run post-hostile coordination
+       ↓
+11. Run senior final arbiter
+       ↓
+12. Save integrated review
+       ↓
+13. Enter interactive follow-up mode
+```
+
+For a 9-page paper the reviewer may still perform many separate model calls. Runtime is intentionally subordinate to review depth.
+
+## 12.5 Specialist review coverage
+
+The initial review covers the document through multiple independent lenses:
+
+### Micro / line-and-paragraph review
+
+Checks:
+
+- grammar and punctuation
+- ambiguous wording
+- unsupported claims
+- logical gaps
+- undefined terminology
+- repetition
+- transitions
+- citation placement
+- technical imprecision visible from the text
+- numerical inconsistencies visible from the text
+
+Each finding retains page/line references.
+
+### Section-quality review
+
+Checks:
+
+- whether each section fulfils its scientific purpose
+- section-to-section logic
+- missing or weak subsections
+- unclear contribution statements
+- method/result/discussion separation
+- claims requiring qualification
+
+### Technical review
+
+Checks:
+
+- technical correctness
+- method descriptions
+- control/robotics logic
+- assumptions
+- coordinate frames
+- signs and units
+- causal claims
+- unsupported conclusions
+- fairness of experimental comparisons
+
+### Mathematics and equations
+
+Checks:
+
+- algebraic consistency where derivations are visible
+- variable definitions
+- dimensions and units
+- signs and coordinate conventions
+- boundary assumptions
+- symbol consistency
+- missing/duplicated terms
+- relationship between equations and prose
+
+### Data and statistics
+
+Checks:
+
+- numerical consistency
+- percentages and totals
+- sample sizes
+- units
+- uncertainty
+- reported metrics
+- statistical methodology
+- consistency between abstract, results and discussion
+
+### Experimental design
+
+Checks:
+
+- adequacy of baselines
+- comparison fairness
+- evaluation methodology
+- missing controls
+- repeatability
+- experimental limitations
+
+### Reproducibility
+
+Checks:
+
+- missing implementation details
+- parameter disclosure
+- datasets
+- hardware/software information
+- experimental protocol
+- information required to reproduce the claimed result
+
+### Novelty and contribution
+
+Checks:
+
+- explicit contribution statements
+- overlap with described prior work
+- whether claims exceed the evidence supplied
+- whether contribution boundaries are clear
+
+### Publication suitability
+
+Checks:
+
+- title
+- abstract
+- keywords
+- journal/conference suitability
+- submission-readiness concerns
+
+## 12.6 Adaptive coordinator and targeted re-review
+
+The coordinator is a separate QwQ reasoning agent.
+
+It reads the specialist reports and asks:
+
+```text
+Is there a serious unresolved disagreement,
+high-risk claim, suspicious numerical/equation issue,
+literature uncertainty, or other finding that deserves
+another focused specialist pass?
+```
+
+It can request a limited number of targeted actions per round.
+
+Example:
+
+```text
+Coordinator
+    ↓
+"Technical reviewer and equation reviewer disagree
+about the sign convention in Eq. 7."
+    ↓
+Targeted equation review
+    ↓
+Targeted technical review
+    ↓
+Coordinator reassesses
+```
+
+The number of coordinator rounds is bounded:
+
+```env
+REVIEW_COORDINATOR_MAX_ROUNDS=2
+REVIEW_COORDINATOR_MAX_ACTIONS_PER_ROUND=5
+```
+
+This makes the system adaptive without allowing an unbounded agent loop.
+
+## 12.7 Reviewer #2 / hostile review
+
+The reviewer contains a dedicated adversarial pass.
+
+It is intentionally skeptical and looks for vulnerabilities before submission:
+
+- overstated novelty
+- unsupported claims
+- weak baselines
+- unfair comparisons
+- missing experiments
+- statistical weaknesses
+- reproducibility gaps
+- technical/equation inconsistencies
+- literature omissions
+- ambiguous figures/tables
+- conclusions that exceed the evidence
+
+The goal is not to be insulting. It is to simulate a demanding peer-review perspective.
+
+The result is saved separately as:
+
+```text
+hostile_reviewer2.md
+```
+
+and is then passed into the final arbitration stage.
+
+## 12.8 Language, academic voice and AI-style signals
+
+The reviewer has separate language and style analysis.
+
+It checks:
+
+- grammar and syntax
+- sentence construction
+- terminology consistency
+- paragraph coherence
+- passive/active voice
+- vague or inflated wording
+- repetitive sentence patterns
+- generic transitions
+- machine-like textual signals
+
+The AI-style component does **not** claim to determine whether a document was written by AI.
+
+Instead it identifies textual characteristics such as:
+
+```text
+generic filler
+repetitive templates
+vague claims
+uniform sentence rhythm
+formulaic transitions
+low-information polished prose
+repeated conclusion structures
+```
+
+The reviewer can also provide evidence-preserving natural academic rewrites.
+
+The `humanize` command is intended to improve specificity and authorial clarity, not to promise detector evasion.
+
+## 12.9 Visual, equation and numerical review
+
+Pages containing figures, drawings, plots, tables, equation signals or related visual content are rendered to images.
+
+The Qwen3.8 vision agent reviews visible evidence.
+
+It checks:
+
+- labels
+- legends
+- axes
+- units
+- scales
+- captions
+- table contents
+- figure clarity
+- diagram structure
+- equation rendering
+- visible numerical values
+
+The visual agent is explicitly instructed not to invent unreadable values.
+
+Visual findings are then available to the equation and senior review stages.
+
+## 12.10 Citation and literature verification
+
+The reviewer extracts the bibliography and attempts automatic Crossref metadata verification.
+
+It checks for:
+
+- title/author/year mismatches
+- venue and DOI issues
+- incomplete metadata
+- duplicate references
+- references requiring manual verification
+
+The literature stage also generates targeted web-search queries to identify:
+
+- likely missing research families
+- under-covered methods
+- missing foundational work
+- missing recent work
+- claims whose evidence may need strengthening
+
+Web discovery is evidence for review planning, not automatic proof of scientific correctness.
+
+## 12.11 Review sessions and resume
+
+Every review receives a persistent session directory:
+
+```text
+review_sessions/
+└── YYYYMMDD_HHMMSS_<session-id>/
+```
+
+The source PDF is copied into the session so that the review remains associated with the exact document being reviewed.
+
+The session stores:
+
+```text
+session.json
+review_progress.json
+document_outline / extracted text artifacts
+specialist reports
+coordinator reports
+targeted review reports
+hostile reviewer report
+final integrated review
+visual page renders
+citation evidence
+literature evidence
+```
+
+The application can resume a previous session from the startup menu.
+
+Progress is updated stage-by-stage so an interrupted long review can be diagnosed rather than treated as an opaque failure.
+
+## 12.12 Reviewer PDF library
+
+The reviewer expects PDFs under:
+
+```text
+reviewer PDFs/
+```
+
+Nested directories are supported.
+
+For example:
+
+```text
+reviewer PDFs/
+├── Papers/
+│   ├── paper_a.pdf
+│   └── paper_b.pdf
+├── Thesis/
+│   └── phd_thesis.pdf
+└── Proposals/
+    └── proposal.pdf
+```
+
+When starting a new review, the application lists PDFs numerically.
+
+The startup menu also provides:
+
+```text
+1. Start a new review
+2. Resume previous
+3. Sync reviewer PDFs
+q. Quit
+```
+
+`Sync reviewer PDFs` rescans the entire folder recursively.
+
+If a PDF is missing from the menu, place it under `reviewer PDFs/` and run:
+
+```text
+3
+```
+
+to sync.
+
+The reviewer deliberately keeps the source PDF folder separate from `review_sessions/`.
+
+## 12.13 Reviewer command reference
+
+### Launch
+
+```bash
+./run_research_reviewer.sh
+```
+
+The launcher:
+
+1. changes to the repository directory
+2. creates `.env.research_reviewer` from `.env.research_reviewer.example` if needed
+3. activates `.venv`
+4. creates `reviewer PDFs/`
+5. creates `review_sessions/`
+6. launches `research_reviewer.py`
+
+### Direct Python launch
+
+```bash
+source .venv/bin/activate
+python research_reviewer.py
+```
+
+### Self-test
+
+```bash
+python research_reviewer.py --self-test
+```
+
+The self-test checks:
+
+- `requests`
+- PyMuPDF
+- DDGS
+- Ollama connectivity
+- reviewer PDF directory
+- review session directory
+
+### Interactive commands after a review
+
+```text
+q
+    quit and save
+
+review
+    show the integrated review
+
+files
+    list files produced by the session
+
+hostile
+    show Reviewer #2 output
+
+humanize
+    rewrite a pasted paragraph into more natural academic prose
+
+<normal question>
+    ask a follow-up question about the review/document
+```
+
+## 12.14 Reviewer environment variables
+
+The reviewer uses its own configuration:
+
+```text
+.env.research_reviewer
+```
+
+The tracked template is:
+
+```text
+.env.research_reviewer.example
+```
+
+The local `.env.research_reviewer` should not be committed.
+
+### Ollama endpoint and models
+
+```env
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+
+REVIEW_GENERAL_MODEL=qwen3.5:35b-a3b
+REVIEW_CRITICAL_MODEL=qwq:32b
+REVIEW_VISION_MODEL=qwen3.8:27b
+REVIEW_HOSTILE_MODEL=qwq:32b
+```
+
+Coordinator and specialist overrides:
+
+```env
+REVIEW_COORDINATOR_MODEL=qwq:32b
+
+REVIEW_LANGUAGE_MODEL=qwen3.5:35b-a3b
+REVIEW_AI_STYLE_MODEL=qwen3.5:35b-a3b
+```
+
+### Coordinator settings
+
+```env
+REVIEW_COORDINATOR_ENABLED=true
+REVIEW_COORDINATOR_MAX_ROUNDS=2
+REVIEW_COORDINATOR_MAX_ACTIONS_PER_ROUND=5
+REVIEW_COORDINATOR_CTX=24576
+REVIEW_COORDINATOR_TOKENS=4200
+REVIEW_COORDINATOR_TIMEOUT_SECONDS=1800
+```
+
+### Language and AI-style analysis
+
+```env
+REVIEW_LANGUAGE_ENABLED=true
+REVIEW_LANGUAGE_CTX=16384
+REVIEW_LANGUAGE_TOKENS=5000
+REVIEW_LANGUAGE_TIMEOUT_SECONDS=1800
+REVIEW_LANGUAGE_REVIEW_ALL_CHUNKS=true
+REVIEW_HUMANIZE_EXAMPLES=16
+
+REVIEW_AI_STYLE_ENABLED=true
+REVIEW_AI_STYLE_CTX=16384
+REVIEW_AI_STYLE_TOKENS=4200
+REVIEW_AI_STYLE_TIMEOUT_SECONDS=1800
+```
+
+### Base inference settings
+
+```env
+REVIEW_LLM_TIMEOUT_SECONDS=1800
+REVIEW_HEARTBEAT_SECONDS=15
+
+REVIEW_GENERAL_CTX=16384
+REVIEW_GENERAL_TOKENS=4500
+
+REVIEW_CRITICAL_CTX=24576
+REVIEW_CRITICAL_TOKENS=5000
+
+REVIEW_VISION_CTX=12288
+REVIEW_VISION_TOKENS=2500
+REVIEW_VISION_TIMEOUT_SECONDS=1200
+
+REVIEW_HOSTILE_CTX=24576
+REVIEW_HOSTILE_TOKENS=5000
+REVIEW_HOSTILE_TIMEOUT_SECONDS=1800
+```
+
+### Document review depth
+
+```env
+REVIEW_CHUNK_CHARS=11000
+REVIEW_CHUNK_OVERLAP=1200
+REVIEW_SECTION_MAX_CHARS=28000
+
+REVIEW_MAX_CITATIONS=250
+REVIEW_CITATION_RESULTS=3
+REVIEW_REFERENCE_MAX_WEB=120
+
+REVIEW_LITERATURE_QUERIES=10
+REVIEW_WEB_RESULTS_PER_QUERY=6
+REVIEW_REWRITE_EXAMPLES=12
+```
+
+### Visual review
+
+```env
+REVIEW_VISUAL_REVIEW=true
+REVIEW_VISUAL_DPI=144
+REVIEW_MAX_VISUAL_PAGES=0
+REVIEW_SAVE_PAGE_RENDER=true
+```
+
+`REVIEW_MAX_VISUAL_PAGES=0` means that all detected visual/math pages are eligible.
+
+### Thinking controls
+
+For the quality-first configuration, enable reasoning for the reviewer roles:
+
+```env
+REVIEW_GENERAL_THINK=true
+REVIEW_MICRO_THINK=true
+REVIEW_SECTION_THINK=true
+REVIEW_DATA_THINK=true
+REVIEW_CITATION_THINK=true
+REVIEW_LITERATURE_PLAN_THINK=true
+REVIEW_LITERATURE_ANALYSIS_THINK=true
+REVIEW_FOLLOWUP_THINK=true
+REVIEW_REWRITE_THINK=true
+REVIEW_CRITICAL_THINK=true
+REVIEW_COORDINATOR_THINK=true
+REVIEW_LANGUAGE_THINK=true
+REVIEW_AI_STYLE_THINK=true
+REVIEW_VISION_THINK=true
+REVIEW_HOSTILE_THINK=true
+```
+
+These role-specific flags allow individual passes to be disabled deliberately, but for the current quality-first reviewer setup they should remain enabled.
+
+### Generation-limit recovery
+
+When Ollama reports `done=length` or returns no final content, the reviewer increases the generation budget while keeping thinking enabled.
+
+```env
+REVIEW_LLM_MAX_RETRIES=0
+REVIEW_LLM_RETRY_TOKEN_MULTIPLIER=1.5
+REVIEW_LLM_MAX_TOKENS=12000
+REVIEW_LLM_FALLBACK_NO_THINK=true
+```
+
+Typical sequence for a 4,500-token call:
+
+```text
+4500 → 6750 → 10125 → 12000
+```
+
+Only after the reasoning ceiling is reached does the reviewer attempt a `think=false` fallback.
+
+### Timeout recovery
+
+Timeouts use a different policy. The context is deliberately kept unchanged so the model does not lose source/work context.
+
+```env
+REVIEW_TIMEOUT_FIRST_MULTIPLIER=1.5
+REVIEW_TIMEOUT_SECOND_MULTIPLIER=2.0
+REVIEW_TIMEOUT_MAX_RECOVERIES=3
+REVIEW_TIMEOUT_FALLBACK_NO_THINK=true
+REVIEW_TIMEOUT_FALLBACK_TOKEN_MULTIPLIER=1.5
+```
+
+For a 1,800-second starting timeout:
+
+```text
+1800 s → 2700 s → 3600 s
+```
+
+Thinking stays enabled throughout those timeout recoveries. The final recovery switches to `think=false` and increases the token budget by the configured multiplier.
+
+### Token-repeat recovery
+
+Ollama can report:
+
+```text
+prediction aborted, token repeat limit reached
+```
+
+The reviewer treats this as a distinct failure class.
+
+```env
+REVIEW_REPEAT_MAX_RECOVERIES=3
+REVIEW_REPEAT_TEMPERATURE_1=0.15
+REVIEW_REPEAT_TEMPERATURE_2=0.25
+REVIEW_REPEAT_FALLBACK_TEMPERATURE=0.15
+REVIEW_REPEAT_PENALTY_1=1.10
+REVIEW_REPEAT_PENALTY_2=1.15
+REVIEW_REPEAT_FALLBACK_PENALTY=1.10
+REVIEW_REPEAT_LAST_N=128
+REVIEW_REPEAT_FALLBACK_TOKEN_MULTIPLIER=1.5
+```
+
+Normal review calls remain deterministic at `temperature=0`. These recovery settings are used only after the repeat-limit error.
+
+### Other Ollama failure recovery
+
+```env
+REVIEW_OLLAMA_TRANSIENT_RETRIES=3
+REVIEW_OLLAMA_RESPONSE_RETRIES=2
+
+REVIEW_OLLAMA_BACKOFF_INITIAL_SECONDS=5
+REVIEW_OLLAMA_BACKOFF_MAX_SECONDS=60
+REVIEW_OLLAMA_HEALTH_TIMEOUT_SECONDS=10
+```
+
+The reviewer also distinguishes:
+
+- connection failures
+- HTTP 429 / 408 / 5xx
+- malformed JSON
+- unexpected response schemas
+- context-size errors
+- CUDA / memory failures
+- model-not-found errors
+
+### Context and memory recovery
+
+```env
+REVIEW_CONTEXT_ERROR_REDUCTION=0.6666667
+REVIEW_CONTEXT_ERROR_MIN=8192
+REVIEW_CONTEXT_ERROR_MAX_RECOVERIES=2
+
+REVIEW_OOM_CONTEXT_REDUCTION=0.75
+REVIEW_OOM_CONTEXT_MIN=8192
+REVIEW_OOM_MAX_RECOVERIES=2
+```
+
+Context reduction is used for genuine context-size or memory failures, not ordinary timeouts.
+
+### Model fallback
+
+```env
+REVIEW_MODEL_FALLBACK_ENABLED=true
+
+REVIEW_GENERAL_FALLBACK_MODEL=
+
+REVIEW_CRITICAL_FALLBACK_MODEL=qwen3.5:35b-a3b
+REVIEW_COORDINATOR_FALLBACK_MODEL=qwen3.5:35b-a3b
+REVIEW_LANGUAGE_FALLBACK_MODEL=qwen3.5:35b-a3b
+REVIEW_AI_STYLE_FALLBACK_MODEL=qwen3.5:35b-a3b
+REVIEW_HOSTILE_FALLBACK_MODEL=qwen3.5:35b-a3b
+
+REVIEW_VISION_FALLBACK_MODEL=
+```
+
+Leave the vision fallback empty unless the fallback model is actually vision-capable.
+
+### Web and Crossref reliability
+
+```env
+REVIEW_WEB_TIMEOUT_SECONDS=30
+
+REVIEW_WEB_RETRIES=3
+REVIEW_WEB_BACKOFF_INITIAL_SECONDS=2
+REVIEW_WEB_BACKOFF_MAX_SECONDS=20
+
+REVIEW_CROSSREF_RETRIES=3
+REVIEW_CROSSREF_BACKOFF_INITIAL_SECONDS=2
+REVIEW_CROSSREF_BACKOFF_MAX_SECONDS=20
+
+REVIEW_WEB_CROSSREF_FALLBACK=true
+```
+
+### PDF limits
+
+```env
+REVIEW_MAX_PDF_MB=300
+```
+
+The reviewer automatically creates the required session/PDF directories.
+
+## 12.15 Ollama failure-recovery architecture
+
+The reviewer distinguishes different failure classes instead of treating every failure as a token-budget problem.
+
+### Generation-limit failure
+
+```text
+done=length / incomplete content
+        ↓
+increase max_tokens
+        ↓
+keep thinking=True
+        ↓
+repeat until configured ceiling
+        ↓
+think=False final fallback
+```
+
+### Timeout
+
+```text
+timeout
+   ↓
+1.5× timeout
+   ↓
+2.0× timeout
+   ↓
+think=False + larger fallback token budget
+```
+
+The context remains unchanged during timeout recovery.
+
+### Token-repeat failure
+
+```text
+token repeat limit
+        ↓
+change sampling / repeat penalty
+        ↓
+retry
+        ↓
+second sampling recovery
+        ↓
+think=False fallback
+```
+
+### Context-size failure
+
+```text
+context error
+    ↓
+reduce context
+    ↓
+retry
+    ↓
+configured recovery ceiling
+    ↓
+optional model fallback
+```
+
+### Memory / CUDA failure
+
+```text
+OOM / CUDA memory error
+    ↓
+reduce context
+    ↓
+retry
+    ↓
+optional model fallback
+```
+
+### Model unavailable
+
+```text
+model not found / unavailable
+        ↓
+configured fallback model
+        ↓
+retry
+```
+
+### Transport/server failures
+
+```text
+connection / 429 / 408 / 5xx
+        ↓
+exponential backoff
+        ↓
+retry same generation settings
+```
+
+The reviewer does not silently turn an infrastructure failure into a successful empty result.
+
+## 12.16 Web and Crossref reliability
+
+Web search and Crossref verification have their own retry layers.
+
+For general web discovery:
+
+```text
+query
+  ↓
+attempt 1
+  ↓ failure
+backoff
+  ↓
+attempt 2
+  ↓ failure
+backoff
+  ↓
+attempt 3
+  ↓
+explicit failed state
+```
+
+A failed web search is kept distinct from a successful search that returned zero results.
+
+This distinction matters scientifically:
+
+```text
+status=success, results=[]
+```
+
+does not mean the same thing as:
+
+```text
+status=failed
+```
+
+When enabled, the literature workflow can use Crossref as an academic fallback for web-discovery failure.
+
+Crossref bibliography checks use their own retries and preserve unresolved references explicitly.
+
+## 12.17 Reviewer outputs
+
+A typical review session contains artifacts such as:
+
+```text
+review_sessions/YYYYMMDD_HHMMSS_<session-id>/
+├── session.json
+├── review_progress.json
+├── page_renders/
+├── micro_review.md
+├── section_quality.md
+├── technical_review.md
+├── visual_review.md
+├── equation_review.md
+├── data_review.md
+├── statistical_review.md
+├── style_review.md
+├── language_review.md
+├── ai_style_signal_review.md
+├── citation_review.md
+├── literature_review.md
+├── novelty_contribution_review.md
+├── reproducibility_review.md
+├── experimental_design_review.md
+├── venue_suitability_review.md
+├── front_matter_review.md
+├── nomenclature_units_review.md
+├── coordinator_round_*.md
+├── coordinator_*_*.md
+├── hostile_reviewer2.md
+├── final_integrated_with_hostile_review.md
+└── initial_review.md
+```
+
+Exact files can vary depending on configuration and whether a particular specialist is enabled.
+
+`review_progress.json` records stage state so interrupted reviews can be diagnosed and resumed.
+
+## 12.18 Self-test and launch
+
+Run:
+
+```bash
+./run_research_reviewer.sh --self-test
+```
+
+or:
+
+```bash
+source .venv/bin/activate
+python research_reviewer.py --self-test
+```
+
+Then start:
+
+```bash
+./run_research_reviewer.sh
+```
+
+The first run creates:
+
+```text
+.env.research_reviewer
+reviewer PDFs/
+review_sessions/
+```
+
+from the example/configuration already tracked in the repository.
+
+For a new review:
+
+```text
+Start a new review
+    ↓
+select PDF
+    ↓
+optional manual document-type override
+    ↓
+multi-agent review
+```
+
+For a previous review:
+
+```text
+Resume previous
+    ↓
+select session
+    ↓
+continue interactive follow-up
+```
+
+
+# 13. Document library setup
 
 The document library is defined by:
 
@@ -2425,7 +3614,7 @@ q. Back
 
 ---
 
-# 13. Image library setup
+# 14. Image library setup
 
 The Research Assistant launcher creates:
 
@@ -2473,9 +3662,9 @@ VISION_MAX_IMAGES=4
 
 ---
 
-# 14. Running both applications
+# 15. Running all three applications
 
-## 14.1 Deep Research Engine
+## 15.1 Deep Research Engine
 
 From the repository:
 
@@ -2483,7 +3672,7 @@ From the repository:
 ./run_research.sh "your research question"
 ```
 
-## 14.2 Research Assistant
+## 15.2 Research Assistant
 
 ```bash
 ./run_research_assistant.sh
@@ -2497,7 +3686,7 @@ The assistant launcher:
 4. creates `images/`
 5. launches `research_assistant.py`
 
-## 14.3 Direct Python execution
+## 15.3 Research Reviewer
 
 You can also run:
 
@@ -2514,7 +3703,7 @@ python research_assistant.py
 
 ---
 
-# 15. Recommended configuration for a 16 GB GPU
+# 16. Recommended configuration for a 16 GB GPU
 
 The safest starting point is:
 
@@ -2526,6 +3715,11 @@ Deep Research Engine:
 Research Assistant:
     one large answer request at a time
     serial vision
+
+Research Reviewer:
+    one large reviewer request at a time
+    keep coordinator/hostile/final QwQ passes serialized
+    expect CPU/RAM offloading for QwQ 32B on 16 GB VRAM
 ```
 
 ## Model residency
@@ -2579,7 +3773,7 @@ and ensure no unnecessary Ollama models are being held resident.
 
 ---
 
-# 16. API keys and optional providers
+# 17. API keys and optional providers
 
 The architecture is designed to work with public/anonymous sources where possible.
 
@@ -2670,9 +3864,9 @@ UNPAYWALL_EMAIL=your@email.com
 
 ---
 
-# 17. Understanding generated data
+# 18. Understanding generated data
 
-## 17.1 Deep Research `runs/`
+## 18.1 Deep Research `runs/`
 
 Each run is isolated:
 
@@ -2723,7 +3917,7 @@ run_summary.json
     final machine-readable run summary
 ```
 
-## 17.2 Research Assistant `followup_runs/`
+## 18.2 Research Assistant `followup_runs/`
 
 Each interactive research question gets a trace directory.
 
@@ -2744,7 +3938,7 @@ query_plan.json
 
 These files make it possible to inspect exactly what evidence and settings were used for a question.
 
-## 17.3 `rag_index/`
+## 18.3 `rag_index/`
 
 The document RAG database lives in:
 
@@ -2765,7 +3959,31 @@ Do not manually edit this database unless you know exactly what you are doing.
 
 If a clean rebuild is ever required, stop the assistant and back up/remove the RAG database before rescanning.
 
-## 17.4 Conversation sessions
+## 18.4 Conversation sessions
+
+## 18.5 Research Reviewer `review_sessions/`
+
+Each reviewer session is stored under:
+
+```text
+review_sessions/YYYYMMDD_HHMMSS_<session-id>/
+```
+
+Important artifacts include:
+
+```text
+session.json
+review_progress.json
+micro_review.md
+technical_review.md
+equation_review.md
+citation_review.md
+literature_review.md
+hostile_reviewer2.md
+final_integrated_with_hostile_review.md
+```
+
+Treat these files as potentially private academic research data.
 
 Persistent assistant conversations are stored under:
 
@@ -2779,17 +3997,20 @@ Treat them as potentially private research data.
 
 ---
 
-# 18. GitHub and moving the system to another machine
+# 19. GitHub and moving the system to another machine
 
 The repository is designed to be copied to another Ubuntu/Linux machine and rebuilt locally.
 
-## 18.1 What belongs in Git
+## 19.1 What belongs in Git
 
 Recommended source/configuration files:
 
 ```text
 deep_research_engine.py
 research_assistant.py
+research_reviewer.py
+run_research_reviewer.sh
+.env.research_reviewer.example
 setup.sh
 requirements.txt
 document_library.yaml
@@ -2803,21 +4024,23 @@ Do **not** commit:
 
 ```text
 .venv/
-.env.deep_research_engine
-.env.research_assistant
 runs/
 followup_runs/
 quick_research_runs/
 conversation_sessions/
 rag_index/
+reviewer PDFs/
+review_sessions/
 *.pdf
 private documents
 private images
 ```
 
-unless you deliberately intend that data to be public.
+Environment files require a separate decision. If they contain any credentials or secrets, keep them local and ignore them. If they contain only non-secret model/runtime configuration and you intentionally want a reproducible configuration in Git, they may be tracked.
 
-## 18.2 Recommended fresh-machine migration
+For the current reference repository, `.env.deep_research_engine`, `.env.research_assistant`, and `.env.research_reviewer` are safe to commit only when you have verified they contain no secrets.
+
+## 19.2 Recommended fresh-machine migration
 
 After cloning the repository on another Ubuntu machine:
 
@@ -2825,7 +4048,7 @@ After cloning the repository on another Ubuntu machine:
 git clone <YOUR_GITHUB_REPOSITORY_URL>
 cd <repository-directory>
 
-chmod +x setup.sh run_research.sh run_research_assistant.sh
+chmod +x setup.sh run_research.sh run_research_assistant.sh run_research_reviewer.sh
 ./setup.sh
 ```
 
@@ -2852,13 +4075,14 @@ pip install -r requirements.txt
 
 when using the automated setup.
 
-## 18.3 What you still configure manually
+## 19.3 What you still configure manually
 
 After `./setup.sh`, configure the machine-specific settings:
 
 ```text
 .env.deep_research_engine
 .env.research_assistant
+.env.research_reviewer
 ```
 
 These files contain model/runtime choices and may contain optional API credentials, so they should remain local.
@@ -2872,7 +4096,7 @@ images/
 
 The bootstrap does not copy personal research data between machines.
 
-## 18.4 Manual fallback
+## 19.4 Manual fallback
 
 If you do not want to use `setup.sh`, follow the manual installation procedure in [Section 6.3](#63-manual-installation).
 
@@ -2900,7 +4124,7 @@ Optional:
 ollama pull nomic-embed-text
 ```
 
-## 18.5 Hardware-specific configuration
+## 19.5 Hardware-specific configuration
 
 Different machines may require different:
 
@@ -2914,7 +4138,7 @@ The software architecture is portable, but the performance configuration is not 
 
 For the current RTX 5000 Ada 16 GB reference system, keep local-model concurrency conservative.
 
-# 19. Recommended `.gitignore`
+# 20. Recommended `.gitignore`
 
 A good starting `.gitignore` is:
 
@@ -2935,15 +4159,27 @@ env/
 .env
 .env.*
 !.env.example
+!.env.*.example
+
+# Uncomment/enable these explicit exceptions only when the repository intentionally
+# tracks non-secret runtime configuration files.
+# !.env.deep_research_engine
+# !.env.research_assistant
+# !.env.research_reviewer
+!.env.*.example
 
 # Local research outputs
 runs/
 followup_runs/
 quick_research_runs/
 conversation_sessions/
+review_sessions/
 
 # Local RAG database
 rag_index/
+
+# Private reviewer source documents
+reviewer PDFs/
 
 # Generated PDFs
 *.pdf
@@ -2971,7 +4207,7 @@ and ignore the actual user content.
 
 ---
 
-# 20. Troubleshooting
+# 21. Troubleshooting
 
 ## Ollama command not found
 
@@ -3122,6 +4358,75 @@ VISION_THINK=true
 
 when you want reasoning during visual analysis.
 
+## Research Reviewer fails with Ollama errors
+
+The reviewer has separate recovery paths for:
+
+```text
+done=length
+timeout
+token repeat limit
+HTTP 429 / 408 / 5xx
+connection failure
+context overflow
+CUDA / out-of-memory
+missing model
+malformed Ollama response
+```
+
+Check the live Ollama state with:
+
+```bash
+ollama ps
+nvidia-smi
+```
+
+Check connectivity:
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
+Run the reviewer self-test:
+
+```bash
+./run_research_reviewer.sh --self-test
+```
+
+For the current RTX 5000 Ada 16 GB reference system, QwQ 32B may be CPU/GPU offloaded. Long technical-review calls can therefore take tens of minutes or longer.
+
+The reviewer keeps the full context during timeout recovery. It reduces context only for explicit context-size or memory errors.
+
+## Research Reviewer PDF does not appear in the menu
+
+Check:
+
+```text
+reviewer PDFs/
+```
+
+then run:
+
+```text
+3
+```
+
+from the reviewer startup menu to rescan the folder.
+
+The folder is recursive, so nested directories such as `reviewer PDFs/Papers/` are supported.
+
+## Research Reviewer cannot resume
+
+Check:
+
+```text
+review_sessions/
+```
+
+and make sure the session directory and `session.json` still exist.
+
+If the application was interrupted during a specialist stage, `review_progress.json` records the most recent stage state and individual specialist reports remain available.
+
 ## Deep Research takes a long time
 
 This is expected for Deep mode.
@@ -3204,9 +4509,9 @@ and verify the engine path exists in the workspace.
 
 ---
 
-# 21. Typical workflows
+# 22. Typical workflows
 
-## 21.1 Quick everyday Chat
+## 22.1 Quick everyday Chat
 
 ```bash
 ./run_research_assistant.sh
@@ -3226,7 +4531,7 @@ LLM only
 
 Then ask questions normally.
 
-## 21.2 Current information question
+## 22.2 Current information question
 
 Choose:
 
@@ -3242,7 +4547,7 @@ Or toggle it during the session:
 w
 ```
 
-## 21.3 Ask about a book/PDF
+## 22.3 Ask about a book/PDF
 
 Put the PDF in:
 
@@ -3276,7 +4581,7 @@ Then ask:
 Summarize the control strategy described in chapter 5.
 ```
 
-## 21.4 Ask about your own project documents
+## 22.4 Ask about your own project documents
 
 Put project files in:
 
@@ -3292,7 +4597,7 @@ documents/AEROSUB/
 
 Then select the corresponding document project.
 
-## 21.5 Ask about a technical image
+## 22.5 Ask about a technical image
 
 Put the image in:
 
@@ -3326,7 +4631,7 @@ Qwen3.5
 answer
 ```
 
-## 21.6 Ask a question about an image and a PDF
+## 22.6 Ask a question about an image and a PDF
 
 Use Document Understanding.
 
@@ -3358,7 +4663,7 @@ Qwen3.5
 answer
 ```
 
-## 21.7 Continue a completed Deep Research run
+## 22.7 Continue a completed Deep Research run
 
 Choose:
 
@@ -3377,7 +4682,7 @@ select the run, and decide whether to use:
 - saved research database
 - fresh Web search
 
-## 21.8 Start a new research topic
+## 22.8 Start a new research topic
 
 Choose:
 
@@ -3396,7 +4701,7 @@ decide whether to search:
 - saved research database
 - fresh Web
 
-## 21.9 Launch Deep Research from the assistant
+## 22.9 Launch Deep Research from the assistant
 
 While chatting:
 
@@ -3408,13 +4713,63 @@ The current discussion is turned into a self-contained research request and pass
 
 After completion, the new research run is attached back to the assistant.
 
-## 21.10 Run a full literature review directly
+## 22.10 Review a paper or thesis
+
+Place the PDF under:
+
+```text
+reviewer PDFs/
+```
+
+Start:
+
+```bash
+./run_research_reviewer.sh
+```
+
+Choose:
+
+```text
+1. Start a new review
+```
+
+Select the PDF, allow automatic document-type detection, and let the multi-agent review run.
+
+After the initial review, use:
+
+```text
+review
+```
+
+to display the integrated review, or ask follow-up questions directly.
+
+For a natural academic rewrite:
+
+```text
+humanize
+```
+
+Then paste the paragraph and finish with a blank line.
+
+To inspect Reviewer #2:
+
+```text
+hostile
+```
+
+To resume later, restart the reviewer and select:
+
+```text
+2. Resume previous
+```
+
+## 22.10 Run a full literature review directly
 
 ```bash
 ./run_research.sh "Perform a deep literature review of ... "
 ```
 
-## 21.11 Pilot a complex pipeline first
+## 22.11 Pilot a complex pipeline first
 
 ```bash
 ./run_research.sh --mode short "Perform a literature review of ..."
@@ -3428,15 +4783,15 @@ Then, after validating the search space:
 
 ---
 
-# 22. Design principles and limitations
+# 23. Design principles and limitations
 
-## 22.1 Local-first
+## 23.1 Local-first
 
 The core LLM inference is local through Ollama.
 
 External access is used for evidence retrieval, not as the main LLM runtime.
 
-## 22.2 Evidence-aware answers
+## 23.2 Evidence-aware answers
 
 The Research Assistant distinguishes:
 
@@ -3450,7 +4805,7 @@ visual evidence
 
 and instructs the final model not to invent citations.
 
-## 22.3 Fail-soft retrieval
+## 23.3 Fail-soft retrieval
 
 External APIs can fail.
 
@@ -3464,7 +4819,7 @@ Provider B/C/D can continue
 
 rather than killing an entire research run.
 
-## 22.4 Separate perception from reasoning
+## 23.4 Separate perception from reasoning
 
 The image pipeline does not ask the visual model to produce the final research answer.
 
@@ -3480,7 +4835,7 @@ reasoning model
 
 This is particularly useful for engineering diagrams, plots, screenshots and technical figures.
 
-## 22.5 Separate research from interactive assistance
+## 23.5 Separate research from interactive assistance
 
 A complete deep literature review is too expensive to execute for every question.
 
@@ -3496,7 +4851,7 @@ Research Assistant
 use that corpus interactively
 ```
 
-## 22.6 Current limitations
+## 23.6 Current limitations
 
 The system is currently:
 
@@ -3514,7 +4869,7 @@ The generated evidence should always be reviewed before publication or high-stak
 
 ---
 
-# 23. Future extension points
+# 24. Future extension points
 
 The architecture leaves several clean extension points.
 
