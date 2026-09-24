@@ -132,48 +132,72 @@ All three applications use the same workspace and local Ollama service, but have
 
 # 1. System overview
 
-The project is deliberately divided into a **research engine**, an **interactive research assistant**, and an **independent research reviewer**.
+The project is deliberately divided into **three independent applications** that share the same local Ollama service but have different inputs, workflows, outputs, and persistent data.
 
 ```mermaid
 flowchart TB
-    U[User] --> RA[Research Assistant]
-    U --> DRE[Deep Research Engine]
+    U[User] --> DRE[Deep Research Engine]
+    U --> RA[Research Assistant]
     U --> RR[Research Reviewer]
 
-    RA -->|normal chat| Q35[Qwen3.5 35B-A3B]
-    RA -->|image analysis| VISION[Qwen3.8 27B]
-    RA -->|document questions| RAG[Local Document RAG]
-    RA -->|research follow-up| DB[Saved Research Runs]
-    RA -->|optional fresh evidence| WEB[Web / Scholarly Search]
+    subgraph D[Deep Research Engine]
+        DQ[Research question] --> DP[Planning + task decomposition]
+        DP --> DS[Scholarly + web discovery]
+        DS --> DE[Deep paper analysis]
+        DE --> DC[Evidence corpus]
+        DC --> DG[Critique + blind-gap search]
+        DG --> DW[Hierarchical synthesis + writing]
+        DW --> DPFD[Final scientific review]
+        DPFD --> PDF[Verified PDF]
+    end
 
-    VISION --> VE[Visual Evidence Report]
-    VE --> Q35
+    subgraph A[Research Assistant]
+        AQ[Conversation] --> AI[Chat / Research / Documents]
+        AI --> ARAG[Local document RAG]
+        AI --> AWEB[Optional web evidence]
+        AI --> ADB[Saved research runs]
+        AI --> AV[Serial visual analysis]
+        ARAG --> AA[Qwen3.5 answer]
+        AWEB --> AA
+        ADB --> AA
+        AV --> AA
+        AA --> AOUT[Interactive answer + trace]
+    end
 
-    RAG --> Q35
-    DB --> Q35
-    WEB --> Q35
+    subgraph R[Research Reviewer]
+        RPDF[User-supplied PDF] --> RI[Ingestion + page map + renders]
+        RI --> RS[Specialist review agents]
+        RS --> RC[QwQ coordinator]
+        RC --> RT[Targeted re-review]
+        RT --> RC
+        RC --> RH[Reviewer #2 / hostile pass]
+        RH --> RA2[Post-hostile coordination]
+        RA2 --> RF[Senior final arbiter]
+        RF --> ROUT[Integrated persistent review]
+    end
 
-    DRE --> QWQ[QwQ 32B]
-    DRE --> Q35
-    DRE --> QWEN32[Qwen3 32B]
+    DRE --> DP
+    RA --> AI
+    RR --> RI
 
-    QWQ --> PLAN[Planning / Critique / Review]
-    Q35 --> DISC[Search / Extraction / Analysis]
-    QWEN32 --> SYNTH[Long-form Synthesis / Final Report]
+    DRE -. local inference .-> O[Ollama : 127.0.0.1:11434]
+    RA -. local inference .-> O
+    RR -. local inference .-> O
+```
 
-    PLAN --> DISC
-    DISC --> SYNTH
-    SYNTH --> PDF[Verified PDF]
+Shared local infrastructure:
 
-    RR --> QWQR[QwQ 32B]
-    RR --> Q35R[Qwen3.5 35B-A3B]
-    RR --> Q38R[Qwen3.8 27B]
-    QWQR --> COORD[Coordinator / Hostile / Final Arbitration]
-    Q35R --> SPEC[Specialist Review]
-    Q38R --> VIS[Visual / Figure / Equation Evidence]
-    SPEC --> COORD
-    VIS --> COORD
-    COORD --> REVIEW[Integrated Review]
+```text
+                        ┌───────────────────────────────┐
+                        │ Ollama: 127.0.0.1:11434      │
+                        └──────────────┬────────────────┘
+                                       │
+             ┌─────────────────────────┼─────────────────────────┐
+             │                         │                         │
+             ▼                         ▼                         ▼
+      Deep Research              Research Assistant        Research Reviewer
+      new evidence corpus        interactive context       existing PDF audit
+      → verified PDF             → answer + traces         → persistent review
 ```
 
 The key distinction is:
@@ -238,6 +262,49 @@ images
 ```
 
 The Deep Research Engine creates timestamped directories under `runs/`.
+
+The Research Reviewer creates its own isolated runtime area:
+
+```text
+reviewer PDFs/      → source PDFs selected for review
+review_sessions/    → persistent review state and specialist reports
+```
+
+No application depends on the other application's runtime directories. The three applications share the repository and Ollama service, but their data stores are intentionally separated.
+
+### Repository architecture
+
+```mermaid
+flowchart LR
+    ROOT[Repository root]
+
+    ROOT --> APP1[deep_research_engine.py<br/>Deep Research Engine]
+    ROOT --> APP2[research_assistant.py<br/>Research Assistant]
+    ROOT --> APP3[research_reviewer.py<br/>Research Reviewer]
+
+    ROOT --> CFG[Configuration]
+    CFG --> E1[.env.deep_research_engine]
+    CFG --> E2[.env.research_assistant]
+    CFG --> E3[.env.research_reviewer]
+    CFG --> E3X[.env.research_reviewer.example]
+
+    ROOT --> RUN[Runtime data]
+    RUN --> R1[runs/<br/>Deep Research]
+    RUN --> R2[followup_runs/<br/>Assistant research]
+    RUN --> R3[conversation_sessions/<br/>Assistant memory]
+    RUN --> R4[review_sessions/<br/>Reviewer sessions]
+
+    ROOT --> SRC[User source libraries]
+    SRC --> S1[documents/<br/>RAG library]
+    SRC --> S2[images/<br/>Vision library]
+    SRC --> S3[reviewer PDFs/<br/>Reviewer input]
+
+    ROOT --> LAUNCH[Launchers + bootstrap]
+    LAUNCH --> L1[run_research.sh]
+    LAUNCH --> L2[run_research_assistant.sh]
+    LAUNCH --> L3[run_research_reviewer.sh]
+    LAUNCH --> L4[setup.sh]
+```
 
 ---
 
@@ -753,19 +820,56 @@ Research Assistant:
 
 # 7. Ollama setup
 
-Ollama is the local model server used by both applications.
+Ollama is the shared local model server for **all three applications**. Each application can use a different model for a different role, but requests are sent through the same local API.
 
-Typical topology:
+## 7.1 Shared model-service topology
+
+```mermaid
+flowchart TB
+    DRE[Deep Research Engine] --> API[Ollama API<br/>127.0.0.1:11434]
+    RA[Research Assistant] --> API
+    RR[Research Reviewer] --> API
+
+    API --> QWQ[QwQ 32B<br/>reasoning / critique / arbitration]
+    API --> Q35[Qwen3.5 35B-A3B<br/>research / extraction / general review]
+    API --> Q3[Qwen3 32B<br/>long-form synthesis]
+    API --> Q38[Qwen3.8 27B<br/>vision / visual evidence]
+
+    QWQ --> D1[Deep Research planning + critique]
+    QWQ --> R1[Reviewer technical / equation / coordinator / hostile / final]
+    Q35 --> D2[Deep Research search + paper analysis]
+    Q35 --> A1[Assistant answers]
+    Q35 --> R2[Reviewer specialist analysis]
+    Q3 --> D3[Deep Research final writing]
+    Q38 --> A2[Assistant image evidence]
+    Q38 --> R3[Reviewer visual / figure evidence]
+```
+
+## 7.2 Research Reviewer model path
+
+The Reviewer uses the same Ollama service but keeps its own role routing and recovery policy:
 
 ```mermaid
 flowchart LR
-    RESEARCH[Deep Research Engine] --> API[Ollama localhost:11434]
-    ASSISTANT[Research Assistant] --> API
-    API --> QWQ[QwQ 32B]
-    API --> Q35[Qwen3.5 35B-A3B]
-    API --> Q3[Qwen3 32B]
-    API --> Q38[Qwen3.8 27B]
+    PDF[Review PDF] --> INGEST[Document ingestion]
+    INGEST --> SPEC[Specialist agents]
+
+    Q35R[Qwen3.5 35B-A3B] --> SPEC
+    Q38R[Qwen3.8 27B] --> SPEC
+    QWQR[QwQ 32B] --> COORD[Coordinator / hostile / final arbitration]
+
+    SPEC --> COORD
+    COORD --> REVIEW[Integrated review]
+
+    FAIL[Ollama failure] --> REC[Central recovery layer]
+    REC --> LENGTH[Generation-length recovery<br/>increase tokens]
+    REC --> TIMEOUT[Timeout recovery<br/>1.5× → 2× → no-thinking]
+    REC --> REPEAT[Token-repeat recovery<br/>adjust sampling → no-thinking]
+    REC --> RESOURCE[Context / OOM recovery<br/>reduce resource → retry / fallback model]
+    REC --> TRANSIENT[Connection / 429 / 5xx<br/>backoff + retry]
 ```
+
+## 7.3 Local endpoint
 
 The default Ollama endpoint is:
 
