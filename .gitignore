@@ -24,6 +24,8 @@ rag_index/
 # Private documents and images
 documents/
 images/
+reviewer PDFs/
+review_sessions/
 
 # Generated reports
 *.pdf
