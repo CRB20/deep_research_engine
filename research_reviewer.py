@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -314,24 +315,36 @@ def split_reference_entries(block: str) -> list[str]:
 # -----------------------------------------------------------------------------
 # Ollama helpers
 # -----------------------------------------------------------------------------
-# Reasoning is enabled selectively. Technically demanding agents use deliberate reasoning,
-# while line-level editing, formatting, extraction and other bounded tasks use direct generation
-# so the model does not spend the entire output budget in hidden reasoning.
-REVIEW_GENERAL_THINK = os.getenv("REVIEW_GENERAL_THINK", "false").lower() in {"1", "true", "yes", "on"}
-REVIEW_MICRO_THINK = os.getenv("REVIEW_MICRO_THINK", "false").lower() in {"1", "true", "yes", "on"}
-REVIEW_SECTION_THINK = os.getenv("REVIEW_SECTION_THINK", "false").lower() in {"1", "true", "yes", "on"}
-REVIEW_DATA_THINK = os.getenv("REVIEW_DATA_THINK", "false").lower() in {"1", "true", "yes", "on"}
-REVIEW_CITATION_THINK = os.getenv("REVIEW_CITATION_THINK", "false").lower() in {"1", "true", "yes", "on"}
-REVIEW_LITERATURE_PLAN_THINK = os.getenv("REVIEW_LITERATURE_PLAN_THINK", "false").lower() in {"1", "true", "yes", "on"}
+# Reasoning is enabled by default for every reviewer agent. Role-specific .env flags
+# may deliberately disable it, while the centralized recovery layer may temporarily
+# switch to think=False only after configured failure-recovery paths are exhausted.
+# Quality-first default: every reviewer agent starts with thinking enabled.
+# A user may deliberately disable a specific role with the corresponding .env flag.
+REVIEW_GENERAL_THINK = os.getenv("REVIEW_GENERAL_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_MICRO_THINK = os.getenv("REVIEW_MICRO_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_SECTION_THINK = os.getenv("REVIEW_SECTION_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_DATA_THINK = os.getenv("REVIEW_DATA_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_CITATION_THINK = os.getenv("REVIEW_CITATION_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_LITERATURE_PLAN_THINK = os.getenv("REVIEW_LITERATURE_PLAN_THINK", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_LITERATURE_ANALYSIS_THINK = os.getenv("REVIEW_LITERATURE_ANALYSIS_THINK", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_FOLLOWUP_THINK = os.getenv("REVIEW_FOLLOWUP_THINK", "true").lower() in {"1", "true", "yes", "on"}
-REVIEW_REWRITE_THINK = os.getenv("REVIEW_REWRITE_THINK", "false").lower() in {"1", "true", "yes", "on"}
+REVIEW_REWRITE_THINK = os.getenv("REVIEW_REWRITE_THINK", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_CRITICAL_THINK = os.getenv("REVIEW_CRITICAL_THINK", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_COORDINATOR_THINK = os.getenv("REVIEW_COORDINATOR_THINK", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_LANGUAGE_THINK = os.getenv("REVIEW_LANGUAGE_THINK", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_AI_STYLE_THINK = os.getenv("REVIEW_AI_STYLE_THINK", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_VISION_THINK = os.getenv("REVIEW_VISION_THINK", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_HOSTILE_THINK = os.getenv("REVIEW_HOSTILE_THINK", "true").lower() in {"1", "true", "yes", "on"}
+
+# Additional role controls for bounded late-stage specialist passes. These also default
+# to thinking mode and may be explicitly disabled in .env.
+REVIEW_REPRODUCIBILITY_THINK = os.getenv("REVIEW_REPRODUCIBILITY_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_EXPERIMENTAL_DESIGN_THINK = os.getenv("REVIEW_EXPERIMENTAL_DESIGN_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_NOVELTY_THINK = os.getenv("REVIEW_NOVELTY_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_STATISTICS_THINK = os.getenv("REVIEW_STATISTICS_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_SUITABILITY_THINK = os.getenv("REVIEW_SUITABILITY_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_TITLE_ABSTRACT_THINK = os.getenv("REVIEW_TITLE_ABSTRACT_THINK", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_NOMENCLATURE_THINK = os.getenv("REVIEW_NOMENCLATURE_THINK", "true").lower() in {"1", "true", "yes", "on"}
 
 # Empty final answers should not permanently discard a specialist pass. Qwen-family
 # reasoning models can spend the generation budget in `thinking` before emitting
@@ -383,6 +396,16 @@ REVIEW_CONTEXT_ERROR_MAX_RECOVERIES = max(0, int(os.getenv("REVIEW_CONTEXT_ERROR
 REVIEW_OOM_CONTEXT_REDUCTION = min(0.9, max(0.25, float(os.getenv("REVIEW_OOM_CONTEXT_REDUCTION", "0.75"))))
 REVIEW_OOM_CONTEXT_MIN = max(4096, int(os.getenv("REVIEW_OOM_CONTEXT_MIN", "8192")))
 REVIEW_OOM_MAX_RECOVERIES = max(0, int(os.getenv("REVIEW_OOM_MAX_RECOVERIES", "2")))
+# Context-constrained generation recovery. This handles a different failure from an
+# Ollama context-overflow HTTP error: the request is accepted, but `done_reason=length`
+# because the input already consumed most of the context window. In that case we shrink
+# the source payload, not the model context.
+REVIEW_STALLED_LENGTH_MAX_RECOVERIES = max(0, int(os.getenv("REVIEW_STALLED_LENGTH_MAX_RECOVERIES", "4")))
+REVIEW_STALLED_LENGTH_MIN_PROMPT_CHARS = max(6000, int(os.getenv("REVIEW_STALLED_LENGTH_MIN_PROMPT_CHARS", "12000")))
+REVIEW_STALLED_LENGTH_PROMPT_TARGET_FRACTION = min(0.85, max(0.40, float(os.getenv("REVIEW_STALLED_LENGTH_PROMPT_TARGET_FRACTION", "0.70"))))
+REVIEW_STALLED_LENGTH_MIN_PROMPT_FRACTION = min(0.90, max(0.10, float(os.getenv("REVIEW_STALLED_LENGTH_MIN_PROMPT_FRACTION", "0.20"))))
+REVIEW_DATA_INPUT_MAX_CHARS = max(12000, int(os.getenv("REVIEW_DATA_INPUT_MAX_CHARS", "36000")))
+REVIEW_DATA_INPUT_MIN_CHARS = max(8000, int(os.getenv("REVIEW_DATA_INPUT_MIN_CHARS", "12000")))
 REVIEW_MODEL_FALLBACK_ENABLED = os.getenv("REVIEW_MODEL_FALLBACK_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_GENERAL_FALLBACK_MODEL = os.getenv("REVIEW_GENERAL_FALLBACK_MODEL", "")
 REVIEW_CRITICAL_FALLBACK_MODEL = os.getenv("REVIEW_CRITICAL_FALLBACK_MODEL", REVIEW_GENERAL_MODEL)
@@ -526,6 +549,94 @@ def _default_think_for_model(model: str) -> bool:
     return REVIEW_GENERAL_THINK
 
 
+def _prompt_source_span(prompt: str) -> tuple[int, int] | None:
+    """Find the largest source/evidence-like payload in a review prompt."""
+    markers = (
+        "\nSOURCE:\n",
+        "\nSOURCE EXCERPTS:\n",
+        "\nSOURCE TEXT:\n",
+        "\nDOCUMENT TEXT:\n",
+        "\nDOCUMENT:\n",
+        "\nEVIDENCE:\n",
+        "\nSPECIALIST REPORTS:\n",
+        "\nREVIEW MATERIAL:\n",
+    )
+    candidates: list[tuple[int, int]] = []
+    for marker in markers:
+        start = prompt.find(marker)
+        while start >= 0:
+            payload_start = start + len(marker)
+            if len(prompt) - payload_start >= REVIEW_STALLED_LENGTH_MIN_PROMPT_CHARS:
+                candidates.append((payload_start, len(prompt)))
+            start = prompt.find(marker, payload_start)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda span: span[1] - span[0])
+
+
+def _shrink_prompt_payload(prompt: str, target_chars: int) -> tuple[str, bool, int]:
+    """Shrink only the largest source payload while preserving prompt instructions."""
+    span = _prompt_source_span(prompt)
+    if not span:
+        return prompt, False, 0
+
+    start, end = span
+    source = prompt[start:end]
+    target_chars = max(2000, int(target_chars))
+    if target_chars >= len(source):
+        return prompt, False, len(source)
+
+    # Prefer page/block-aware compression so a data-review prompt retains coverage
+    # across the document instead of dropping only the middle or only the end.
+    pieces = re.split(r"(?=\n(?:PAGE\s+\d+|---\s*PAGE\s+\d+))", source)
+    pieces = [p for p in pieces if p]
+    omitted_marker = "\n\n[INPUT REDUCED FOR CONTEXT-CONSTRAINED RECOVERY]\n\n"
+
+    if len(pieces) >= 2:
+        # Allocate the target proportionally across pages/blocks, with a floor so that
+        # small pages are not erased completely.
+        available = max(2000, target_chars - len(omitted_marker))
+        total = sum(len(p) for p in pieces)
+        kept: list[str] = []
+        for piece in pieces:
+            share = max(600, int(available * (len(piece) / max(1, total))))
+            kept.append(piece[:share])
+        candidate_source = omitted_marker.join(kept)
+        if len(candidate_source) > target_chars:
+            candidate_source = candidate_source[:target_chars]
+    else:
+        head = int(target_chars * 0.70)
+        tail = max(0, target_chars - head - len(omitted_marker))
+        candidate_source = source[:head] + omitted_marker + (source[-tail:] if tail else "")
+
+    new_prompt = prompt[:start] + candidate_source + prompt[end:]
+    if len(new_prompt) >= len(prompt):
+        return prompt, False, len(source)
+    return new_prompt, True, len(source)
+
+
+def _looks_context_constrained(
+    prompt_eval_count: Any,
+    eval_count: Any,
+    attempt_tokens: int,
+    current_ctx: int,
+) -> bool:
+    """Detect accepted generations truncated by the input already filling the context."""
+    try:
+        prompt_eval = int(prompt_eval_count)
+        eval_tokens = int(eval_count)
+    except (TypeError, ValueError):
+        return False
+    if prompt_eval <= 0 or eval_tokens <= 0:
+        return False
+
+    combined = prompt_eval + eval_tokens
+    output_far_below_request = eval_tokens < max(256, int(attempt_tokens * 0.70))
+    prompt_uses_most_context = prompt_eval >= int(current_ctx * 0.78)
+    context_almost_full = combined >= int(current_ctx * 0.95)
+    return output_far_below_request and prompt_uses_most_context and context_almost_full
+
+
 def _build_retry_budgets(base_tokens: int) -> list[int]:
     """Build increasing generation budgets up to REVIEW_LLM_MAX_TOKENS.
 
@@ -576,6 +687,9 @@ def ollama_chat(model: str, prompt: str, *, images: list[str] | None = None,
       - malformed/unexpected JSON -> retry the same request with backoff.
       - token-repeat abort -> change sampling parameters, then use a final no-thinking
         recovery with a 1.5x token budget instead of replaying the exact same request.
+      - accepted `done_reason=length` with a nearly full input context -> classify as
+        context-constrained generation, shrink only the source payload, reset the token
+        ladder and retry with thinking preserved.
       - non-retryable 4xx -> fail clearly rather than wasting generation retries.
     """
     configured_think = _default_think_for_model(model) if think is None else think
@@ -591,6 +705,7 @@ def ollama_chat(model: str, prompt: str, *, images: list[str] | None = None,
     original_timeout = float(timeout or REVIEW_LLM_TIMEOUT)
     current_ctx = max(1024, int(ctx))
     current_timeout = original_timeout
+    active_prompt = prompt
     timeout_count = 0
     forced_no_think = False
     budget_index = 0
@@ -604,14 +719,14 @@ def ollama_chat(model: str, prompt: str, *, images: list[str] | None = None,
     repeat_temperature: float | None = None
     repeat_penalty: float | None = None
     repeat_last_n: int | None = None
+    stalled_length_recoveries = 0
+    last_length_signature: tuple[int, int, str] | None = None
 
     while True:
         attempt_tokens = budgets[budget_index]
         # After the timeout ladder reaches the final no-thinking fallback, use the
         # timeout-adjusted token budget but never restart the normal reasoning ladder.
-        if forced_no_think and timeout_count >= 3:
-            current_think = False
-        elif repeat_forced_no_think:
+        if forced_no_think or repeat_forced_no_think:
             current_think = False
         else:
             current_think = configured_think
@@ -620,7 +735,7 @@ def ollama_chat(model: str, prompt: str, *, images: list[str] | None = None,
         attempt_no = budget_index + 1
         payload: dict[str, Any] = {
             "model": active_model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": active_prompt}],
             "stream": False,
             "think": current_think,
             "keep_alive": keep_alive,
@@ -955,13 +1070,14 @@ def ollama_chat(model: str, prompt: str, *, images: list[str] | None = None,
         thinking = str(message.get("thinking") or "").strip()
         done_reason = str(data.get("done_reason") or "")
         eval_count = data.get("eval_count")
+        prompt_eval_count = data.get("prompt_eval_count")
         truncated = done_reason.lower() == "length"
 
         if content and not truncated:
             log(
                 "AGENT",
                 f"{label_attempt} | completed in {time.monotonic() - started:.1f}s"
-                f" | eval={eval_count} | done={done_reason or 'n/a'}",
+                f" | prompt_eval={prompt_eval_count} | eval={eval_count} | done={done_reason or 'n/a'}",
                 "green",
             )
             return content
@@ -971,22 +1087,83 @@ def ollama_chat(model: str, prompt: str, *, images: list[str] | None = None,
                 "AGENT",
                 f"{label_attempt} | generation hit token limit"
                 f" | content_chars={len(content)} | thinking_chars={len(thinking)}"
-                f" | eval={eval_count} | done={done_reason or 'n/a'}",
+                f" | prompt_eval={prompt_eval_count} | eval={eval_count} | done={done_reason or 'n/a'}",
                 "yellow",
             )
         else:
             log(
                 "AGENT",
                 f"{label_attempt} | empty final response"
-                f" | thinking_chars={len(thinking)} | eval={eval_count}"
-                f" | done={done_reason or 'n/a'}",
+                f" | thinking_chars={len(thinking)} | prompt_eval={prompt_eval_count}"
+                f" | eval={eval_count} | done={done_reason or 'n/a'}",
                 "yellow",
             )
+
+        # Critical recovery distinction: if the request was accepted but the model used
+        # almost the entire context window for prompt + output, increasing num_predict
+        # cannot create more room. Shrink the source payload instead, preserve the full
+        # model context size, and restart the token ladder from the original budget.
+        length_signature = (
+            len(content),
+            int(eval_count) if isinstance(eval_count, (int, float)) else -1,
+            hashlib.sha1(content.encode("utf-8", errors="ignore")[:4000]).hexdigest(),
+        )
+        same_stall = truncated and last_length_signature == length_signature
+        last_length_signature = length_signature if truncated else None
+        context_constrained = truncated and (
+            _looks_context_constrained(prompt_eval_count, eval_count, attempt_tokens, current_ctx)
+            or same_stall
+        )
+
+        if context_constrained and stalled_length_recoveries < REVIEW_STALLED_LENGTH_MAX_RECOVERIES:
+            try:
+                prompt_tokens = int(prompt_eval_count or 0)
+            except (TypeError, ValueError):
+                prompt_tokens = 0
+
+            # Reserve room for the current generation budget, but never demand an
+            # unrealistically tiny source. The target is based on the actual prompt token
+            # count reported by Ollama, so it adapts to tokenization better than a fixed
+            # character limit.
+            reserve_tokens = min(attempt_tokens, max(2048, int(current_ctx * 0.45)))
+            target_prompt_tokens = max(4096, int(current_ctx - reserve_tokens))
+            if prompt_tokens > 0:
+                target_chars = int(len(active_prompt) * (target_prompt_tokens / prompt_tokens))
+            else:
+                target_chars = int(len(active_prompt) * REVIEW_STALLED_LENGTH_PROMPT_TARGET_FRACTION)
+
+            floor_chars = max(
+                REVIEW_STALLED_LENGTH_MIN_PROMPT_CHARS,
+                int(len(active_prompt) * REVIEW_STALLED_LENGTH_MIN_PROMPT_FRACTION),
+            )
+            target_chars = max(floor_chars, target_chars)
+            target_chars = min(target_chars, int(len(active_prompt) * 0.90))
+
+            reduced_prompt, changed, source_chars = _shrink_prompt_payload(active_prompt, target_chars)
+            if changed and len(reduced_prompt) < len(active_prompt):
+                old_len = len(active_prompt)
+                active_prompt = reduced_prompt
+                stalled_length_recoveries += 1
+                budget_index = 0
+                transient_retries = 0
+                response_retries = 0
+                log(
+                    "AGENT",
+                    f"{label} | context-constrained generation detected | recovery "
+                    f"{stalled_length_recoveries}/{REVIEW_STALLED_LENGTH_MAX_RECOVERIES} | "
+                    f"prompt_chars {old_len}->{len(active_prompt)} | source_chars={source_chars} | "
+                    f"prompt_eval={prompt_eval_count} | eval={eval_count} | "
+                    f"keeping ctx={current_ctx} | restarting token ladder at "
+                    f"{budgets[0]} tokens | think={current_think}...",
+                    "yellow",
+                )
+                continue
 
         if forced_no_think and timeout_count >= 3:
             raise RuntimeError(
                 "timeout fallback returned no complete response; "
-                f"content_chars={len(content)}, eval={eval_count}, done={done_reason or 'n/a'}"
+                f"content_chars={len(content)}, prompt_eval={prompt_eval_count}, "
+                f"eval={eval_count}, done={done_reason or 'n/a'}"
             )
 
         if budget_index + 1 < len(budgets):
@@ -1011,6 +1188,13 @@ def ollama_chat(model: str, prompt: str, *, images: list[str] | None = None,
                 "yellow",
             )
             continue
+
+        raise RuntimeError(
+            "no complete model response after exhausting configured recovery paths; "
+            f"content_chars={len(content)}, thinking_chars={len(thinking)}, "
+            f"prompt_eval={prompt_eval_count}, eval={eval_count}, done={done_reason or 'n/a'}"
+        )
+
 
         raise RuntimeError(
             "no complete model response after exhausting configured recovery paths; "
@@ -1378,7 +1562,7 @@ RELEVANT VISUAL NOTES:
 def run_data_review(pages: list[PageRecord], session_dir: Path) -> str:
     numeric_pages = [p for p in pages if len(re.findall(r"\d+(?:\.\d+)?", p.text)) >= 12]
     body = "\n\n".join(f"PAGE {p.page}\n{p.text}" for p in numeric_pages)
-    body = body[:50000]
+    body = body[:REVIEW_DATA_INPUT_MAX_CHARS]
     prompt = f"""
 You are the DATA AND NUMERICAL CONSISTENCY REVIEWER.
 
@@ -2036,7 +2220,7 @@ MICRO REVIEW:
 LITERATURE REVIEW:
 {literature[:45000]}
 """
-    out=ollama_chat(REVIEW_CRITICAL_MODEL,prompt,ctx=REVIEW_CRITICAL_CTX,tokens=REVIEW_CRITICAL_TOKENS,label="novelty and contribution review")
+    out=ollama_chat(REVIEW_CRITICAL_MODEL,prompt,ctx=REVIEW_CRITICAL_CTX,tokens=REVIEW_CRITICAL_TOKENS,label="novelty and contribution review", think=REVIEW_NOVELTY_THINK)
     save_text(session_dir/"novelty_contribution_review.md",out)
     return out
 
@@ -2070,7 +2254,7 @@ rather than forcing irrelevant tests. Identify exact pages/locations where possi
 
 SOURCE EXCERPTS:\n{body}
 """
-    out=ollama_chat(REVIEW_CRITICAL_MODEL,prompt,ctx=REVIEW_CRITICAL_CTX,tokens=REVIEW_CRITICAL_TOKENS,label="statistical methodology review")
+    out=ollama_chat(REVIEW_CRITICAL_MODEL,prompt,ctx=REVIEW_CRITICAL_CTX,tokens=REVIEW_CRITICAL_TOKENS,label="statistical methodology review", think=REVIEW_STATISTICS_THINK)
     save_text(session_dir/"statistical_review.md",out)
     return out
 
@@ -2104,7 +2288,7 @@ Separate missing details from details that are adequately specified. Give concre
 DOCUMENT TYPE: {document_type}
 DOCUMENT EXCERPTS:\n{body}
 """
-    out=ollama_chat(REVIEW_GENERAL_MODEL,prompt,ctx=REVIEW_GENERAL_CTX,tokens=REVIEW_GENERAL_TOKENS,label="reproducibility audit", think=True)
+    out=ollama_chat(REVIEW_GENERAL_MODEL,prompt,ctx=REVIEW_GENERAL_CTX,tokens=REVIEW_GENERAL_TOKENS,label="reproducibility audit", think=REVIEW_REPRODUCIBILITY_THINK)
     save_text(session_dir/"reproducibility_review.md",out)
     return out
 
@@ -2136,7 +2320,7 @@ Give specific additional experiments that would materially strengthen the paper,
 DOCUMENT TYPE: {document_type}
 SOURCE:\n{body}
 """
-    out=ollama_chat(REVIEW_CRITICAL_MODEL,prompt,ctx=REVIEW_CRITICAL_CTX,tokens=REVIEW_CRITICAL_TOKENS,label="experimental design review")
+    out=ollama_chat(REVIEW_CRITICAL_MODEL,prompt,ctx=REVIEW_CRITICAL_CTX,tokens=REVIEW_CRITICAL_TOKENS,label="experimental design review", think=REVIEW_EXPERIMENTAL_DESIGN_THINK)
     save_text(session_dir/"experimental_design_review.md",out)
     return out
 
@@ -2163,7 +2347,7 @@ Do not invent current author guidelines. State when venue-specific verification 
 Document type: {document_type}
 Outline:\n{outline[:30000]}
 """
-    out=ollama_chat(REVIEW_GENERAL_MODEL,prompt,ctx=REVIEW_GENERAL_CTX,tokens=REVIEW_GENERAL_TOKENS,label="journal and conference suitability review", think=False)
+    out=ollama_chat(REVIEW_GENERAL_MODEL,prompt,ctx=REVIEW_GENERAL_CTX,tokens=REVIEW_GENERAL_TOKENS,label="journal and conference suitability review", think=REVIEW_SUITABILITY_THINK)
     save_text(session_dir/"venue_suitability_review.md",out)
     return out
 
@@ -2191,7 +2375,7 @@ Provide:
 
 SOURCE:\n{body}
 """
-    out=ollama_chat(REVIEW_GENERAL_MODEL,prompt,ctx=REVIEW_GENERAL_CTX,tokens=REVIEW_GENERAL_TOKENS,label="title abstract keyword review", think=False)
+    out=ollama_chat(REVIEW_GENERAL_MODEL,prompt,ctx=REVIEW_GENERAL_CTX,tokens=REVIEW_GENERAL_TOKENS,label="title abstract keyword review", think=REVIEW_TITLE_ABSTRACT_THINK)
     save_text(session_dir/"front_matter_review.md",out)
     return out
 
@@ -2218,7 +2402,7 @@ Do not invent definitions that are not in the document.
 
 SOURCE:\n{body}
 """
-    out=ollama_chat(REVIEW_GENERAL_MODEL,prompt,ctx=REVIEW_GENERAL_CTX,tokens=REVIEW_GENERAL_TOKENS,label="nomenclature and units review", think=False)
+    out=ollama_chat(REVIEW_GENERAL_MODEL,prompt,ctx=REVIEW_GENERAL_CTX,tokens=REVIEW_GENERAL_TOKENS,label="nomenclature and units review", think=REVIEW_NOMENCLATURE_THINK)
     save_text(session_dir/"nomenclature_units_review.md",out)
     return out
 
