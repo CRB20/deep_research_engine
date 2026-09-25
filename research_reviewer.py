@@ -181,6 +181,7 @@ class ReviewSession:
     pages: int
     status: str = "created"
     source_filename: str = ""
+    mode: str = "full"
 
 
 # -----------------------------------------------------------------------------
@@ -425,6 +426,138 @@ REVIEW_CROSSREF_BACKOFF_INITIAL_SECONDS = max(0.0, float(os.getenv("REVIEW_CROSS
 REVIEW_CROSSREF_BACKOFF_MAX_SECONDS = max(REVIEW_CROSSREF_BACKOFF_INITIAL_SECONDS, float(os.getenv("REVIEW_CROSSREF_BACKOFF_MAX_SECONDS", "20")))
 REVIEW_WEB_CROSSREF_FALLBACK = os.getenv("REVIEW_WEB_CROSSREF_FALLBACK", "true").lower() in {"1", "true", "yes", "on"}
 
+# -----------------------------------------------------------------------------
+# Runtime modes + proactive context packing
+# -----------------------------------------------------------------------------
+ACTIVE_MODE = "full"
+ACTIVE_CONTEXT_SUMMARY = ""
+ACTIVE_CONTEXT_PACK_PATH: Path | None = None
+
+REVIEW_MODE_ENV = os.getenv("REVIEW_MODE", "full").strip().lower()
+REVIEW_CONTEXT_SUMMARY_MODEL = os.getenv("REVIEW_CONTEXT_SUMMARY_MODEL", REVIEW_GENERAL_MODEL)
+REVIEW_CONTEXT_SUMMARY_CTX = max(4096, int(os.getenv("REVIEW_CONTEXT_SUMMARY_CTX", "8192")))
+REVIEW_CONTEXT_SUMMARY_TOKENS = max(800, int(os.getenv("REVIEW_CONTEXT_SUMMARY_TOKENS", "2200")))
+REVIEW_CONTEXT_SUMMARY_INPUT_CHARS = max(12000, int(os.getenv("REVIEW_CONTEXT_SUMMARY_INPUT_CHARS", "60000")))
+REVIEW_CONTEXT_REUSE = os.getenv("REVIEW_CONTEXT_REUSE", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_CONTEXT_PACK_VERSION = "v1"
+REVIEW_FULL_PROACTIVE_CONTEXT = os.getenv("REVIEW_FULL_PROACTIVE_CONTEXT", "true").lower() in {"1", "true", "yes", "on"}
+REVIEW_FULL_SOURCE_TARGET_GENERAL = max(8000, int(os.getenv("REVIEW_FULL_SOURCE_TARGET_GENERAL", "28000")))
+REVIEW_FULL_SOURCE_TARGET_CRITICAL = max(10000, int(os.getenv("REVIEW_FULL_SOURCE_TARGET_CRITICAL", "36000")))
+REVIEW_FULL_SOURCE_TARGET_COORDINATOR = max(10000, int(os.getenv("REVIEW_FULL_SOURCE_TARGET_COORDINATOR", "32000")))
+REVIEW_SHORT_SOURCE_TARGET_GENERAL = max(5000, int(os.getenv("REVIEW_SHORT_SOURCE_TARGET_GENERAL", "12000")))
+REVIEW_SHORT_SOURCE_TARGET_CRITICAL = max(6000, int(os.getenv("REVIEW_SHORT_SOURCE_TARGET_CRITICAL", "16000")))
+REVIEW_SHORT_SOURCE_TARGET_COORDINATOR = max(7000, int(os.getenv("REVIEW_SHORT_SOURCE_TARGET_COORDINATOR", "14000")))
+REVIEW_SHORT_CONTEXT_SUMMARY_TOKENS = max(600, int(os.getenv("REVIEW_SHORT_CONTEXT_SUMMARY_TOKENS", "1600")))
+REVIEW_SHORT_LLM_MAX_TOKENS = max(1200, int(os.getenv("REVIEW_SHORT_LLM_MAX_TOKENS", "3200")))
+REVIEW_SHORT_GENERAL_CTX = max(4096, int(os.getenv("REVIEW_SHORT_GENERAL_CTX", "8192")))
+REVIEW_SHORT_GENERAL_TOKENS = max(800, int(os.getenv("REVIEW_SHORT_GENERAL_TOKENS", "2200")))
+REVIEW_SHORT_CRITICAL_CTX = max(8192, int(os.getenv("REVIEW_SHORT_CRITICAL_CTX", "12288")))
+REVIEW_SHORT_CRITICAL_TOKENS = max(1000, int(os.getenv("REVIEW_SHORT_CRITICAL_TOKENS", "3000")))
+REVIEW_SHORT_VISION_CTX = max(4096, int(os.getenv("REVIEW_SHORT_VISION_CTX", "8192")))
+REVIEW_SHORT_VISION_TOKENS = max(600, int(os.getenv("REVIEW_SHORT_VISION_TOKENS", "1400")))
+REVIEW_SHORT_COORDINATOR_CTX = max(8192, int(os.getenv("REVIEW_SHORT_COORDINATOR_CTX", "12288")))
+REVIEW_SHORT_COORDINATOR_TOKENS = max(1000, int(os.getenv("REVIEW_SHORT_COORDINATOR_TOKENS", "2400")))
+REVIEW_SHORT_LANGUAGE_CTX = max(4096, int(os.getenv("REVIEW_SHORT_LANGUAGE_CTX", "8192")))
+REVIEW_SHORT_LANGUAGE_TOKENS = max(900, int(os.getenv("REVIEW_SHORT_LANGUAGE_TOKENS", "2500")))
+REVIEW_SHORT_AI_STYLE_CTX = max(4096, int(os.getenv("REVIEW_SHORT_AI_STYLE_CTX", "8192")))
+REVIEW_SHORT_AI_STYLE_TOKENS = max(900, int(os.getenv("REVIEW_SHORT_AI_STYLE_TOKENS", "2200")))
+REVIEW_SHORT_HOSTILE_CTX = max(8192, int(os.getenv("REVIEW_SHORT_HOSTILE_CTX", "12288")))
+REVIEW_SHORT_HOSTILE_TOKENS = max(1000, int(os.getenv("REVIEW_SHORT_HOSTILE_TOKENS", "3000")))
+REVIEW_SHORT_TIMEOUT = max(180.0, float(os.getenv("REVIEW_SHORT_TIMEOUT_SECONDS", "900")))
+REVIEW_SHORT_VISION_TIMEOUT = max(180.0, float(os.getenv("REVIEW_SHORT_VISION_TIMEOUT_SECONDS", "600")))
+REVIEW_SHORT_CONTEXT_RECOVERIES = max(0, int(os.getenv("REVIEW_SHORT_CONTEXT_RECOVERIES", "1")))
+REVIEW_SHORT_STALLED_RECOVERIES = max(0, int(os.getenv("REVIEW_SHORT_STALLED_RECOVERIES", "1")))
+REVIEW_SHORT_REPEAT_RECOVERIES = max(0, int(os.getenv("REVIEW_SHORT_REPEAT_RECOVERIES", "1")))
+
+
+def _set_runtime_mode(mode: str) -> None:
+    """Apply runtime overrides without requiring separate short-mode env files."""
+    global ACTIVE_MODE
+    global REVIEW_GENERAL_CTX, REVIEW_GENERAL_TOKENS
+    global REVIEW_CRITICAL_CTX, REVIEW_CRITICAL_TOKENS
+    global REVIEW_VISION_CTX, REVIEW_VISION_TOKENS, REVIEW_VISION_TIMEOUT
+    global REVIEW_COORDINATOR_CTX, REVIEW_COORDINATOR_TOKENS, REVIEW_COORDINATOR_TIMEOUT
+    global REVIEW_LANGUAGE_CTX, REVIEW_LANGUAGE_TOKENS, REVIEW_LANGUAGE_TIMEOUT
+    global REVIEW_AI_STYLE_CTX, REVIEW_AI_STYLE_TOKENS, REVIEW_AI_STYLE_TIMEOUT
+    global REVIEW_HOSTILE_CTX, REVIEW_HOSTILE_TOKENS, REVIEW_HOSTILE_TIMEOUT
+    global REVIEW_LLM_MAX_TOKENS, REVIEW_LLM_MAX_RETRIES
+    global REVIEW_CONTEXT_ERROR_MAX_RECOVERIES, REVIEW_OOM_MAX_RECOVERIES
+    global REVIEW_STALLED_LENGTH_MAX_RECOVERIES, REVIEW_REPEAT_MAX_RECOVERIES
+    global REVIEW_TIMEOUT_MAX_RECOVERIES
+    global REVIEW_CONTEXT_SUMMARY_TOKENS
+    global REVIEW_MICRO_THINK, REVIEW_SECTION_THINK, REVIEW_DATA_THINK
+    global REVIEW_CITATION_THINK, REVIEW_LITERATURE_PLAN_THINK, REVIEW_LITERATURE_ANALYSIS_THINK
+    global REVIEW_FOLLOWUP_THINK, REVIEW_REWRITE_THINK, REVIEW_CRITICAL_THINK
+    global REVIEW_COORDINATOR_THINK, REVIEW_LANGUAGE_THINK, REVIEW_AI_STYLE_THINK
+    global REVIEW_VISION_THINK, REVIEW_HOSTILE_THINK, REVIEW_REPRODUCIBILITY_THINK
+    global REVIEW_EXPERIMENTAL_DESIGN_THINK, REVIEW_NOVELTY_THINK, REVIEW_STATISTICS_THINK
+    global REVIEW_SUITABILITY_THINK, REVIEW_TITLE_ABSTRACT_THINK, REVIEW_NOMENCLATURE_THINK
+    global REVIEW_GENERAL_THINK
+    global REVIEW_MAX_VISUAL_PAGES, REVIEW_LANGUAGE_REVIEW_ALL_CHUNKS
+
+    mode = (mode or "full").strip().lower()
+    if mode not in {"full", "short"}:
+        raise ValueError(f"Unknown reviewer mode: {mode}")
+    ACTIVE_MODE = mode
+    if mode != "short":
+        return
+
+    # Short mode keeps EVERY stage and EVERY visual page; only depth per call is reduced.
+    REVIEW_GENERAL_CTX = REVIEW_SHORT_GENERAL_CTX
+    REVIEW_GENERAL_TOKENS = REVIEW_SHORT_GENERAL_TOKENS
+    REVIEW_CRITICAL_CTX = REVIEW_SHORT_CRITICAL_CTX
+    REVIEW_CRITICAL_TOKENS = REVIEW_SHORT_CRITICAL_TOKENS
+    REVIEW_VISION_CTX = REVIEW_SHORT_VISION_CTX
+    REVIEW_VISION_TOKENS = REVIEW_SHORT_VISION_TOKENS
+    REVIEW_VISION_TIMEOUT = REVIEW_SHORT_VISION_TIMEOUT
+    REVIEW_COORDINATOR_CTX = REVIEW_SHORT_COORDINATOR_CTX
+    REVIEW_COORDINATOR_TOKENS = REVIEW_SHORT_COORDINATOR_TOKENS
+    REVIEW_COORDINATOR_TIMEOUT = REVIEW_SHORT_TIMEOUT
+    REVIEW_LANGUAGE_CTX = REVIEW_SHORT_LANGUAGE_CTX
+    REVIEW_LANGUAGE_TOKENS = REVIEW_SHORT_LANGUAGE_TOKENS
+    REVIEW_LANGUAGE_TIMEOUT = REVIEW_SHORT_TIMEOUT
+    REVIEW_AI_STYLE_CTX = REVIEW_SHORT_AI_STYLE_CTX
+    REVIEW_AI_STYLE_TOKENS = REVIEW_SHORT_AI_STYLE_TOKENS
+    REVIEW_AI_STYLE_TIMEOUT = REVIEW_SHORT_TIMEOUT
+    REVIEW_HOSTILE_CTX = REVIEW_SHORT_HOSTILE_CTX
+    REVIEW_HOSTILE_TOKENS = REVIEW_SHORT_HOSTILE_TOKENS
+    REVIEW_HOSTILE_TIMEOUT = REVIEW_SHORT_TIMEOUT
+    REVIEW_LLM_MAX_TOKENS = REVIEW_SHORT_LLM_MAX_TOKENS
+    REVIEW_LLM_MAX_RETRIES = min(REVIEW_LLM_MAX_RETRIES, 1)
+    REVIEW_CONTEXT_ERROR_MAX_RECOVERIES = min(REVIEW_CONTEXT_ERROR_MAX_RECOVERIES, REVIEW_SHORT_CONTEXT_RECOVERIES)
+    REVIEW_OOM_MAX_RECOVERIES = min(REVIEW_OOM_MAX_RECOVERIES, REVIEW_SHORT_CONTEXT_RECOVERIES)
+    REVIEW_STALLED_LENGTH_MAX_RECOVERIES = min(REVIEW_STALLED_LENGTH_MAX_RECOVERIES, REVIEW_SHORT_STALLED_RECOVERIES)
+    REVIEW_REPEAT_MAX_RECOVERIES = min(REVIEW_REPEAT_MAX_RECOVERIES, REVIEW_SHORT_REPEAT_RECOVERIES)
+    REVIEW_TIMEOUT_MAX_RECOVERIES = min(REVIEW_TIMEOUT_MAX_RECOVERIES, 1)
+    REVIEW_CONTEXT_SUMMARY_TOKENS = REVIEW_SHORT_CONTEXT_SUMMARY_TOKENS
+
+    # Short mode intentionally disables reasoning for every agent. The review still runs
+    # every stage, all pages, all configured agents and all coordinator/hostile/final passes.
+    REVIEW_GENERAL_THINK = False
+    REVIEW_MICRO_THINK = False
+    REVIEW_SECTION_THINK = False
+    REVIEW_DATA_THINK = False
+    REVIEW_CITATION_THINK = False
+    REVIEW_LITERATURE_PLAN_THINK = False
+    REVIEW_LITERATURE_ANALYSIS_THINK = False
+    REVIEW_FOLLOWUP_THINK = False
+    REVIEW_REWRITE_THINK = False
+    REVIEW_CRITICAL_THINK = False
+    REVIEW_COORDINATOR_THINK = False
+    REVIEW_LANGUAGE_THINK = False
+    REVIEW_AI_STYLE_THINK = False
+    REVIEW_VISION_THINK = False
+    REVIEW_HOSTILE_THINK = False
+    REVIEW_REPRODUCIBILITY_THINK = False
+    REVIEW_EXPERIMENTAL_DESIGN_THINK = False
+    REVIEW_NOVELTY_THINK = False
+    REVIEW_STATISTICS_THINK = False
+    REVIEW_SUITABILITY_THINK = False
+    REVIEW_TITLE_ABSTRACT_THINK = False
+    REVIEW_NOMENCLATURE_THINK = False
+    REVIEW_MAX_VISUAL_PAGES = 0
+    REVIEW_LANGUAGE_REVIEW_ALL_CHUNKS = True
+
 
 class OllamaContextError(RuntimeError):
     pass
@@ -661,10 +794,164 @@ def _build_retry_budgets(base_tokens: int) -> list[int]:
 
 
 
+
+def _document_source_hash(pdf_path: Path) -> str:
+    h = hashlib.sha256()
+    with pdf_path.open("rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _build_summary_input(pages: list[PageRecord], outline: str, max_chars: int | None = None) -> str:
+    """Create a high-coverage summary input without silently dropping whole sections."""
+    safe_chars = int(max_chars or REVIEW_CONTEXT_SUMMARY_INPUT_CHARS)
+    pieces: list[str] = [f"DOCUMENT OUTLINE:\n{outline[:min(12000, safe_chars // 3)]}"]
+    per_page_cap = max(700, int(safe_chars / max(1, len(pages))))
+    for p in pages:
+        text = re.sub(r"\s+", " ", p.text).strip()
+        if len(text) <= per_page_cap:
+            excerpt = text
+        else:
+            head = int(per_page_cap * 0.62)
+            tail = max(200, per_page_cap - head)
+            excerpt = text[:head] + " [..page-middle omitted..] " + text[-tail:]
+        pieces.append(f"\n--- PAGE {p.page} ---\n{excerpt}")
+    result = "\n".join(pieces)
+    return result[:safe_chars]
+
+
+def build_context_pack(pages: list[PageRecord], outline: str, references: list[str], session_dir: Path) -> dict[str, Any]:
+    """Build/load a reusable review context summary once per document."""
+    global ACTIVE_CONTEXT_SUMMARY, ACTIVE_CONTEXT_PACK_PATH
+    ACTIVE_CONTEXT_SUMMARY = ""
+    ACTIVE_CONTEXT_PACK_PATH = None
+    pack_path = session_dir / "context_pack.json"
+    # The session PDF hash is supplied by the caller through the session directory cache marker.
+    # For backward compatibility, also tolerate an existing pack without a hash.
+    if REVIEW_CONTEXT_REUSE and pack_path.exists():
+        try:
+            pack = json.loads(pack_path.read_text(encoding="utf-8"))
+            if pack.get("version") == REVIEW_CONTEXT_PACK_VERSION and pack.get("summary"):
+                ACTIVE_CONTEXT_SUMMARY = str(pack["summary"])
+                ACTIVE_CONTEXT_PACK_PATH = pack_path
+                return pack
+        except Exception:
+            pass
+
+    # A single compact synthesis is cheaper than repeatedly feeding 30-50k chars to every
+    # specialist. Keep enough input room for the requested output inside Ollama's context.
+    # The raw PDF remains authoritative for targeted checks.
+    summary_input_tokens = max(1800, int(REVIEW_CONTEXT_SUMMARY_CTX * 0.68))
+    summary_budget_chars = min(
+        REVIEW_CONTEXT_SUMMARY_INPUT_CHARS,
+        max(9000, int(summary_input_tokens * 3.0)),
+    )
+    summary_source = _build_summary_input(pages, outline, max_chars=summary_budget_chars)
+    prompt = f"""
+You are the CONTEXT-BUILDER for a rigorous academic PDF review system.
+Create a dense, factual review context for downstream specialist agents.
+Do NOT write a generic abstract. Preserve exact technical details that reviewers may need.
+
+Preserve, where present:
+- title/problem/application
+- exact methods, algorithms, model names, architectures and system components
+- equations/variable names that can be read from the text
+- datasets, sample sizes and experimental conditions
+- exact numerical results, ranges, percentages, units and reported errors
+- figure/table/equation numbers and what each contains
+- major claims and what evidence is claimed for each
+- baselines/comparators
+- limitations stated by the authors
+- section structure and major topic of each section
+
+Output concise bullet sections:
+1. PAPER MAP
+2. METHODS / SYSTEM
+3. EXPERIMENTAL SETUP
+4. KEY NUMERICAL EVIDENCE
+5. FIGURES / TABLES / EQUATIONS
+6. MAIN CLAIMS AND CONTRIBUTIONS
+7. LIMITATIONS / RISKS STATED BY AUTHORS
+8. TERMS / ACRONYMS / SYMBOLS
+
+Never invent a value. If something is unclear, say "not clear from extracted text".
+The raw PDF remains authoritative; this context is a navigation/compression aid.
+
+{summary_source}
+"""
+    summary = ollama_chat(
+        REVIEW_CONTEXT_SUMMARY_MODEL,
+        prompt,
+        ctx=REVIEW_CONTEXT_SUMMARY_CTX,
+        tokens=REVIEW_CONTEXT_SUMMARY_TOKENS,
+        label="pre-review smart context summary",
+        think=False,
+        preprocess=False,
+        timeout=REVIEW_SHORT_TIMEOUT if ACTIVE_MODE == "short" else REVIEW_LLM_TIMEOUT,
+    )
+    pack = {
+        "version": REVIEW_CONTEXT_PACK_VERSION,
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "mode_created": ACTIVE_MODE,
+        "summary": summary,
+        "outline": outline,
+        "reference_count": len(references),
+        "pages": [
+            {"page": p.page, "visual_needed": p.visual_needed, "math": p.has_math_signals,
+             "text_chars": len(p.text)} for p in pages
+        ],
+    }
+    save_json(pack_path, pack)
+    ACTIVE_CONTEXT_SUMMARY = summary
+    ACTIVE_CONTEXT_PACK_PATH = pack_path
+    save_text(session_dir / "context_pack.md", summary)
+    return pack
+
+
+def _runtime_source_target(label: str) -> int | None:
+    """Return a proactive source character target for a specialist prompt."""
+    low = label.lower()
+    if ACTIVE_MODE == "short":
+        if "coordinator" in low or "arbiter" in low or "hostile" in low:
+            return REVIEW_SHORT_SOURCE_TARGET_COORDINATOR
+        if any(k in low for k in ("technical", "equation", "mathemat", "statistics", "experiment", "reproduc", "novelty")):
+            return REVIEW_SHORT_SOURCE_TARGET_CRITICAL
+        return REVIEW_SHORT_SOURCE_TARGET_GENERAL
+    if not REVIEW_FULL_PROACTIVE_CONTEXT:
+        return None
+    if "coordinator" in low or "arbiter" in low or "hostile" in low:
+        return REVIEW_FULL_SOURCE_TARGET_COORDINATOR
+    if any(k in low for k in ("technical", "equation", "mathemat", "statistics", "experiment", "reproduc", "novelty")):
+        return REVIEW_FULL_SOURCE_TARGET_CRITICAL
+    return REVIEW_FULL_SOURCE_TARGET_GENERAL
+
+
+def _prepare_prompt_for_runtime(prompt: str, label: str) -> str:
+    """Proactively compact large source payloads before Ollama hits the limit."""
+    if not ACTIVE_CONTEXT_SUMMARY:
+        return prompt
+    target = _runtime_source_target(label)
+    if target is None:
+        return prompt
+    span = _prompt_source_span(prompt)
+    if not span:
+        return prompt
+    start, end = span
+    source_len = end - start
+    if source_len <= target:
+        return prompt
+    reduced_prompt, changed, _ = _shrink_prompt_payload(prompt, target)
+    if not changed:
+        return prompt
+    insert = f"\n\nSMART DOCUMENT CONTEXT (compression/navigation aid; raw source excerpts below are authoritative):\n{ACTIVE_CONTEXT_SUMMARY}\n"
+    return reduced_prompt[:start] + insert + reduced_prompt[start:]
+
+
 def ollama_chat(model: str, prompt: str, *, images: list[str] | None = None,
                 ctx: int, tokens: int, label: str, timeout: float | None = None,
                 keep_alive: str | int = "5m", think: bool | str | None = None,
-                retries: int | None = None) -> str:
+                retries: int | None = None, preprocess: bool = True) -> str:
     """Robust Ollama call with independent recovery policies.
 
     Generation-limit failures:
@@ -705,7 +992,7 @@ def ollama_chat(model: str, prompt: str, *, images: list[str] | None = None,
     original_timeout = float(timeout or REVIEW_LLM_TIMEOUT)
     current_ctx = max(1024, int(ctx))
     current_timeout = original_timeout
-    active_prompt = prompt
+    active_prompt = _prepare_prompt_for_runtime(prompt, label) if preprocess else prompt
     timeout_count = 0
     forced_no_think = False
     budget_index = 0
@@ -1989,13 +2276,13 @@ SOURCE EXCERPTS:
         model, ctx, tokens, timeout = REVIEW_GENERAL_MODEL, REVIEW_GENERAL_CTX, REVIEW_GENERAL_TOKENS, REVIEW_LLM_TIMEOUT
     label = f"coordinator targeted {agent}"
     targeted_think = {
-        "technical": True,
-        "equations": True,
-        "statistics": True,
-        "experiments": True,
-        "novelty": True,
+        "technical": REVIEW_CRITICAL_THINK,
+        "equations": REVIEW_CRITICAL_THINK,
+        "statistics": REVIEW_STATISTICS_THINK,
+        "experiments": REVIEW_EXPERIMENTAL_DESIGN_THINK,
+        "novelty": REVIEW_NOVELTY_THINK,
         "hostile": REVIEW_HOSTILE_THINK,
-        "reproducibility": True,
+        "reproducibility": REVIEW_REPRODUCIBILITY_THINK,
         "literature": REVIEW_LITERATURE_ANALYSIS_THINK,
         "section": REVIEW_SECTION_THINK,
         "micro": REVIEW_MICRO_THINK,
@@ -2481,7 +2768,7 @@ def create_session(pdf_path: Path, doc_type: str) -> tuple[ReviewSession, Path]:
     shutil.copy2(pdf_path, pdf_copy)
     pages = len(fitz.open(pdf_copy))
     now = datetime.now().isoformat(timespec="seconds")
-    session = ReviewSession(session_id, title, str(pdf_path), str(pdf_copy), doc_type, now, now, pages, "created", pdf_path.name)
+    session = ReviewSession(session_id, title, str(pdf_path), str(pdf_copy), doc_type, now, now, pages, "created", pdf_path.name, ACTIVE_MODE)
     save_json(session_dir / "session.json", asdict(session))
     return session, session_dir
 
@@ -2546,6 +2833,13 @@ def run_initial_review(session: ReviewSession, session_dir: Path) -> str:
     })
     save_text(session_dir / "extracted_text.txt", all_text)
     save_text(session_dir / "outline.txt", outline)
+
+    log("REVIEW", "Building/loading reusable smart review context...", "cyan")
+    build_context_pack(pages, outline, references, session_dir)
+    if ACTIVE_MODE == "short":
+        log("REVIEW", "SHORT mode: thinking OFF; reduced ctx/num_predict/prompt payload; no stages or pages skipped.", "magenta")
+    else:
+        log("REVIEW", "FULL mode: reusable smart context + proactive source compression enabled; raw PDF remains authoritative.", "magenta")
 
     log("REVIEW", f"Pages={len(pages)} | chunks={len(chunks)} | visual/math pages={sum(p.visual_needed for p in pages)} | references={len(references)}", "cyan")
 
@@ -2619,6 +2913,7 @@ def run_initial_review(session: ReviewSession, session_dir: Path) -> str:
     save_text(session_dir / "final_integrated_with_hostile_review.md", final + "\n\n===== REVIEWER #2 =====\n\n" + hostile)
 
     session.status = "reviewed"
+    session.mode = ACTIVE_MODE
     session.updated = datetime.now().isoformat(timespec="seconds")
     save_json(session_dir / "session.json", asdict(session))
     return final
@@ -2697,7 +2992,10 @@ def start_new_review() -> tuple[ReviewSession, Path, str] | None:
     log("SESSION", f"Created {session_dir.name}", "green")
     print(f"Document: {pdf}")
     print(f"Detected type: {doc_type}")
-    print("\nStarting the multi-agent review. This is intentionally thorough and can take a long time for a long paper/thesis.\n")
+    if ACTIVE_MODE == "short":
+        print("\nStarting SHORT mode: every review stage, every configured specialist, every visual page, coordinator, Reviewer #2 and final arbiter still run; only reasoning/context/output budgets are reduced.\n")
+    else:
+        print("\nStarting FULL mode: complete quality-first review with proactive context compression and recovery.\n")
     review = run_initial_review(session, session_dir)
     return session, session_dir, review
 
@@ -2809,13 +3107,17 @@ def self_test() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Deep academic PDF reviewer")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--mode", choices=("full", "short"), default=REVIEW_MODE_ENV)
+    parser.add_argument("--short", action="store_true", help="Run the complete review pipeline with reduced context/output budgets and thinking disabled")
     args = parser.parse_args()
+    _set_runtime_mode("short" if args.short else args.mode)
     if args.self_test:
         return self_test()
 
     print("\n" + "=" * 110)
     print(colour("RESEARCH REVIEWER", "cyan"))
     print("Independent multi-agent reviewer for papers, theses, reports and proposals")
+    print(colour(f"Runtime mode: {ACTIVE_MODE.upper()} | all review stages/pages remain enabled", "magenta"))
     print("=" * 110)
     print("1. Start a new review")
     print("2. Resume a previous review")

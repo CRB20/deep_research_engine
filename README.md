@@ -77,6 +77,7 @@ All three applications use the same workspace and local Ollama service, but have
   - [12.2 Architecture](#122-architecture)
   - [12.3 Model roles](#123-model-roles)
   - [12.4 Review workflow](#124-review-workflow)
+    - [12.4.1 Smart context packing and runtime modes](#1241-smart-context-packing-and-runtime-modes)
   - [12.5 Specialist review coverage](#125-specialist-review-coverage)
   - [12.6 Adaptive coordinator and targeted re-review](#126-adaptive-coordinator-and-targeted-re-review)
   - [12.7 Reviewer #2 / hostile review](#127-reviewer-2-hostile-review)
@@ -171,7 +172,9 @@ flowchart TB
 
     subgraph R[Research Reviewer]
         RPDF[User-supplied PDF] --> RI[Ingestion + page map + renders]
+        RI --> CP[One-time smart context pack]
         RI --> RS[Specialist review agents]
+        CP --> RS
         RS --> RC[QwQ coordinator]
         RC --> RT[Targeted re-review]
         RT --> RC
@@ -254,6 +257,10 @@ deep_research_engine/
 ├── reviewer PDFs/                   # PDFs selected for academic review
 ├── review_sessions/                 # persistent Research Reviewer sessions
 └── *.pdf                            # final Deep Research PDF reports
+
+A reviewer session may additionally contain:
+  context_pack.json                  # cached smart review context
+  context_pack.md                    # human-readable context-pack summary
 ```
 
 Some generated directories are created automatically. In particular, the Research Assistant launcher creates:
@@ -927,12 +934,14 @@ This prevents the vision model from competing unnecessarily with the main answer
 
 ## 7.4 Research Reviewer model path
 
-The Reviewer uses the same Ollama service but keeps its own specialist routing and recovery policy:
+The Reviewer uses the same Ollama service but keeps its own specialist routing, smart context-pack stage, runtime modes, and recovery policy:
 
 ```mermaid
 flowchart LR
     PDF[Review PDF] --> INGEST[Document ingestion]
+    INGEST --> PACK[One-time smart context pack<br/>cached in review session]
     INGEST --> SPEC[Specialist agents]
+    PACK --> SPEC
 
     Q35R[Qwen3.5 35B-A3B] --> SPEC
     Q38R[Qwen3.8 27B] --> SPEC
@@ -941,15 +950,21 @@ flowchart LR
     SPEC --> COORD
     COORD --> REVIEW[Integrated review]
 
+    MODE[Runtime mode<br/>FULL or SHORT] -. controls depth .-> SPEC
+    MODE -. controls depth .-> COORD
+
     FAIL[Ollama failure] --> REC[Central recovery layer]
     REC --> LENGTH[Generation-length recovery<br/>increase tokens]
+    REC --> CONTEXT[Context-constrained recovery<br/>compact source + retry]
     REC --> TIMEOUT[Timeout recovery<br/>1.5× → 2× → no-thinking]
-    REC --> REPEAT[Token-repeat recovery<br/>adjust sampling → no-thinking]
-    REC --> RESOURCE[Context / OOM recovery<br/>reduce resource → retry / fallback model]
+    REC --> REPEAT[Token-repeat recovery<br/>sampling → no-thinking]
+    REC --> RESOURCE[Context / OOM recovery<br/>reduce resource → retry / fallback]
     REC --> TRANSIENT[Connection / 429 / 5xx<br/>backoff + retry]
 ```
 
 The Reviewer is deliberately more recovery-aware because a complete paper/thesis review can run for hours and should not lose an entire specialist pass because of a single local inference failure.
+
+v13 also adds a proactive smart context layer and two runtime modes. Full mode preserves the quality-first reasoning configuration; Short mode keeps the same review coverage but reduces inference depth.
 
 ## 7.5 Local endpoint
 
@@ -965,7 +980,7 @@ Do not expose port `11434` directly to the Internet.
 
 # 8. Python environment and dependencies
 
-The shared `requirements.txt` is the canonical Python dependency file for **both applications**.
+The shared `requirements.txt` is the canonical Python dependency file for **all three applications**.
 
 On a fresh machine, the recommended command is:
 
@@ -1057,7 +1072,7 @@ RESEARCH_ASSISTANT_ENV_FILE=/path/to/custom.env
 
 ## 9.3 Why configuration is split
 
-The two applications solve different problems.
+The three applications solve different problems.
 
 ```text
 Deep Research Engine
@@ -2663,19 +2678,33 @@ flowchart TD
     PDF[User PDF] --> INGEST[PDF extraction + page map]
     INGEST --> CHUNKS[Line-addressed page chunks]
     INGEST --> VISP[Rendered visual/math pages]
+    INGEST --> PACK[One-time smart context pack]
 
-    CHUNKS --> MICRO[Micro / paragraph review]
-    CHUNKS --> SECTION[Section quality]
-    CHUNKS --> TECH[Technical accuracy]
-    CHUNKS --> DATA[Data / numerical consistency]
-    CHUNKS --> LANGUAGE[Language / academic voice]
-    CHUNKS --> LIT[Literature gap analysis]
-    CHUNKS --> NOV[Novelty / contribution]
-    CHUNKS --> REPRO[Reproducibility]
-    CHUNKS --> EXP[Experimental design]
-    CHUNKS --> VENUE[Venue suitability]
-    CHUNKS --> FRONT[Title / abstract / keywords]
-    CHUNKS --> NOM[Nomenclature / units]
+    PACK --> MICRO[Micro / paragraph review]
+    PACK --> SECTION[Section quality]
+    PACK --> TECH[Technical accuracy]
+    PACK --> DATA[Data / numerical consistency]
+    PACK --> LANGUAGE[Language / academic voice]
+    PACK --> LIT[Literature gap analysis]
+    PACK --> NOV[Novelty / contribution]
+    PACK --> REPRO[Reproducibility]
+    PACK --> EXP[Experimental design]
+    PACK --> VENUE[Venue suitability]
+    PACK --> FRONT[Title / abstract / keywords]
+    PACK --> NOM[Nomenclature / units]
+
+    CHUNKS --> MICRO
+    CHUNKS --> SECTION
+    CHUNKS --> TECH
+    CHUNKS --> DATA
+    CHUNKS --> LANGUAGE
+    CHUNKS --> LIT
+    CHUNKS --> NOV
+    CHUNKS --> REPRO
+    CHUNKS --> EXP
+    CHUNKS --> VENUE
+    CHUNKS --> FRONT
+    CHUNKS --> NOM
 
     VISP --> VISION[Qwen3.8 visual review]
     VISP --> EQUATION[Equation / mathematics review]
@@ -2780,7 +2809,137 @@ The standard workflow is:
 13. Enter interactive follow-up mode
 ```
 
-For a 9-page paper the reviewer may still perform many separate model calls. Runtime is intentionally subordinate to review depth.
+For a 9-page paper the reviewer may still perform many separate model calls. Runtime is intentionally subordinate to review depth in **Full mode**.
+
+The reviewer also supports **Short mode** for testing and iteration. Short mode does **not** remove review stages, configured specialist agents, visual pages, coordinator/targeted passes, Reviewer #2, or final arbitration. It reduces inference depth by disabling thinking and lowering context, output-token, timeout, and selected recovery budgets.
+
+## 12.4.1 Smart context packing and runtime modes
+
+### Smart context pack
+
+Before specialist review begins, the reviewer builds one reusable context pack from the extracted document. It is generated once per session and stored as:
+
+```text
+review_sessions/<session-id>/
+├── context_pack.json
+└── context_pack.md
+```
+
+The context builder is explicitly instructed to preserve:
+
+```text
+exact methods / algorithms
+equations and variable names when readable
+datasets and sample sizes
+numerical results, ranges, percentages, units and errors
+figure/table/equation numbers
+major claims and evidence
+baselines/comparators
+author-stated limitations
+section structure
+terms / acronyms / symbols
+```
+
+It is **not** a replacement for the PDF. The original PDF remains authoritative for targeted verification. The context pack is a navigation/compression layer reused by downstream agents so that large 30–50k-character source payloads do not have to be repeated unnecessarily.
+
+For large prompts, the reviewer can also proactively compact the source payload before Ollama reaches `done_reason=length`. The smart context summary is then inserted as a compression/navigation aid while the raw source remains available.
+
+### Full mode
+
+Full mode is the normal quality-first configuration:
+
+```bash
+python research_reviewer.py --mode full
+```
+
+or:
+
+```bash
+./run_research_reviewer.sh
+```
+
+Typical Full-mode behaviour:
+
+- thinking remains enabled according to the role-specific `.env` flags
+- larger context windows are used
+- larger output budgets are used
+- full recovery ceilings are preserved
+- all configured review stages and pages remain enabled
+
+### Short mode
+
+Short mode is intended for **fast end-to-end testing of the actual reviewer pipeline**.
+
+It still runs:
+
+```text
+all configured specialist agents
+all visual pages
+micro / section review
+technical / equation / data / statistics review
+language / AI-style analysis
+citation / literature analysis
+novelty / reproducibility / experimental-design checks
+coordinator
+targeted re-review
+Reviewer #2 / hostile review
+post-hostile coordination
+senior final arbiter
+interactive follow-up
+```
+
+Nothing is deliberately skipped for speed.
+
+What changes is the inference depth:
+
+```text
+thinking              → disabled
+general context       → 8,192
+critical context      → 12,288
+vision context        → 8,192
+coordinator context   → 12,288
+general output        → 2,200
+critical output       → 3,000
+vision output         → 1,400
+coordinator output    → 2,400
+hostile output        → 3,000
+short timeout         → 900 s
+vision timeout        → 600 s
+```
+
+Short mode also uses tighter recovery ceilings so a test run does not spend hours retrying a single specialist.
+
+Run it with:
+
+```bash
+python research_reviewer.py --short
+```
+
+or equivalently:
+
+```bash
+python research_reviewer.py --mode short
+```
+
+If the launcher forwards command-line arguments in your local `run_research_reviewer.sh`, the launcher form is also:
+
+```bash
+./run_research_reviewer.sh --short
+```
+
+The runtime banner prints the active mode:
+
+```text
+Runtime mode: FULL | all review stages/pages remain enabled
+```
+
+or:
+
+```text
+Runtime mode: SHORT | all review stages/pages remain enabled
+```
+
+Use **Short mode while changing code, prompts, context budgets or recovery logic**. Once the behaviour is validated, use **Full mode** for the publication-quality review.
 
 ## 12.5 Specialist review coverage
 
@@ -3121,11 +3280,13 @@ The reviewer deliberately keeps the source PDF folder separate from `review_sess
 
 ## 12.13 Reviewer command reference
 
-### Launch
+### Full review launch
 
 ```bash
 ./run_research_reviewer.sh
 ```
+
+This starts the normal **Full** quality-first reviewer.
 
 The launcher:
 
@@ -3136,11 +3297,40 @@ The launcher:
 5. creates `review_sessions/`
 6. launches `research_reviewer.py`
 
-### Direct Python launch
+### Short review launch
+
+Short mode runs the **same complete review pipeline** but disables thinking and reduces context/output/time budgets for faster end-to-end testing.
+
+Direct Python:
 
 ```bash
 source .venv/bin/activate
-python research_reviewer.py
+python research_reviewer.py --short
+```
+
+or:
+
+```bash
+python research_reviewer.py --mode short
+```
+
+Launcher form, when `run_research_reviewer.sh` forwards command-line arguments:
+
+```bash
+./run_research_reviewer.sh --short
+```
+
+### Explicit mode selection
+
+```bash
+python research_reviewer.py --mode full
+python research_reviewer.py --mode short
+```
+
+The `.env` default is controlled by:
+
+```env
+REVIEW_MODE=full
 ```
 
 ### Self-test
@@ -3243,6 +3433,65 @@ REVIEW_AI_STYLE_TOKENS=4200
 REVIEW_AI_STYLE_TIMEOUT_SECONDS=1800
 ```
 
+### Runtime mode and smart context packing
+
+```env
+REVIEW_MODE=full
+
+REVIEW_CONTEXT_SUMMARY_MODEL=qwen3.5:35b-a3b
+REVIEW_CONTEXT_SUMMARY_CTX=8192
+REVIEW_CONTEXT_SUMMARY_TOKENS=2200
+REVIEW_CONTEXT_SUMMARY_INPUT_CHARS=60000
+REVIEW_CONTEXT_REUSE=true
+REVIEW_CONTEXT_PACK_VERSION=v1
+
+REVIEW_FULL_PROACTIVE_CONTEXT=true
+REVIEW_FULL_SOURCE_TARGET_GENERAL=28000
+REVIEW_FULL_SOURCE_TARGET_CRITICAL=36000
+REVIEW_FULL_SOURCE_TARGET_COORDINATOR=32000
+
+REVIEW_STALLED_LENGTH_MAX_RECOVERIES=4
+REVIEW_STALLED_LENGTH_MIN_PROMPT_CHARS=12000
+REVIEW_STALLED_LENGTH_PROMPT_TARGET_FRACTION=0.70
+REVIEW_STALLED_LENGTH_MIN_PROMPT_FRACTION=0.20
+```
+
+The smart context pack is created once per review session and reused by specialist agents. Full-mode proactive source targets compact oversized source payloads before generation repeatedly reaches the context boundary.
+
+### Short-mode inference settings
+
+```env
+REVIEW_SHORT_CONTEXT_SUMMARY_TOKENS=1600
+
+REVIEW_SHORT_SOURCE_TARGET_GENERAL=12000
+REVIEW_SHORT_SOURCE_TARGET_CRITICAL=16000
+REVIEW_SHORT_SOURCE_TARGET_COORDINATOR=14000
+
+REVIEW_SHORT_LLM_MAX_TOKENS=3200
+REVIEW_SHORT_GENERAL_CTX=8192
+REVIEW_SHORT_GENERAL_TOKENS=2200
+REVIEW_SHORT_CRITICAL_CTX=12288
+REVIEW_SHORT_CRITICAL_TOKENS=3000
+REVIEW_SHORT_VISION_CTX=8192
+REVIEW_SHORT_VISION_TOKENS=1400
+REVIEW_SHORT_COORDINATOR_CTX=12288
+REVIEW_SHORT_COORDINATOR_TOKENS=2400
+REVIEW_SHORT_LANGUAGE_CTX=8192
+REVIEW_SHORT_LANGUAGE_TOKENS=2500
+REVIEW_SHORT_AI_STYLE_CTX=8192
+REVIEW_SHORT_AI_STYLE_TOKENS=2200
+REVIEW_SHORT_HOSTILE_CTX=12288
+REVIEW_SHORT_HOSTILE_TOKENS=3000
+
+REVIEW_SHORT_TIMEOUT_SECONDS=900
+REVIEW_SHORT_VISION_TIMEOUT_SECONDS=600
+REVIEW_SHORT_CONTEXT_RECOVERIES=1
+REVIEW_SHORT_STALLED_RECOVERIES=1
+REVIEW_SHORT_REPEAT_RECOVERIES=1
+```
+
+These settings are applied automatically when `--short` or `--mode short` is selected. Short mode also forces every reviewer reasoning flag to `false` for that run.
+
 ### Base inference settings
 
 ```env
@@ -3278,7 +3527,12 @@ REVIEW_REFERENCE_MAX_WEB=120
 REVIEW_LITERATURE_QUERIES=10
 REVIEW_WEB_RESULTS_PER_QUERY=6
 REVIEW_REWRITE_EXAMPLES=12
+
+REVIEW_DATA_INPUT_MAX_CHARS=36000
+REVIEW_DATA_INPUT_MIN_CHARS=12000
 ```
+
+The data reviewer uses these limits when constructing its input. The smart context/recovery system can further compact oversized source payloads while retaining the authoritative PDF on disk.
 
 ### Visual review
 
@@ -3315,6 +3569,8 @@ REVIEW_HOSTILE_THINK=true
 
 These role-specific flags allow individual passes to be disabled deliberately, but for the current quality-first reviewer setup they should remain enabled.
 
+In Short mode, the runtime overrides these flags and sets **all reviewer reasoning flags to `false` for that run**. This is the main quality/runtime trade-off for fast end-to-end testing.
+
 ### Generation-limit recovery
 
 When Ollama reports `done=length` or returns no final content, the reviewer increases the generation budget while keeping thinking enabled.
@@ -3333,6 +3589,28 @@ Typical sequence for a 4,500-token call:
 ```
 
 Only after the reasoning ceiling is reached does the reviewer attempt a `think=false` fallback.
+
+### Context-constrained generation recovery
+
+A `done=length` response can be caused by the prompt consuming most of the model's context rather than by an insufficient output budget. The reviewer detects this pattern using Ollama's prompt/evaluation counts and response signature.
+
+```text
+large source prompt
+      ↓
+done=length repeats at different token budgets
+      ↓
+context-constrained generation detected
+      ↓
+compact source payload
+      ↓
+keep the same ctx
+      ↓
+reset the token ladder
+      ↓
+retry with thinking preserved
+```
+
+This is different from a true context overflow or OOM. It does **not** reduce `ctx` as the first response; it reduces the source payload and keeps the original PDF authoritative.
 
 ### Timeout recovery
 
@@ -3598,6 +3876,8 @@ review_sessions/YYYYMMDD_HHMMSS_<session-id>/
 ├── session.json
 ├── review_progress.json
 ├── page_renders/
+├── context_pack.json
+├── context_pack.md
 ├── micro_review.md
 ├── section_quality.md
 ├── technical_review.md
@@ -3642,10 +3922,22 @@ source .venv/bin/activate
 python research_reviewer.py --self-test
 ```
 
-Then start:
+Then start a normal Full review:
 
 ```bash
 ./run_research_reviewer.sh
+```
+
+For fast end-to-end development/testing without skipping review coverage:
+
+```bash
+python research_reviewer.py --short
+```
+
+or:
+
+```bash
+python research_reviewer.py --mode short
 ```
 
 The first run creates:
@@ -3872,18 +4164,25 @@ The assistant launcher:
 
 ## 15.3 Research Reviewer
 
-You can also run:
+Full review:
 
 ```bash
-source .venv/bin/activate
-python deep_research_engine.py --mode short "your question"
+./run_research_reviewer.sh
+```
+
+Short review for faster development/testing:
+
+```bash
+python research_reviewer.py --short
 ```
 
 or:
 
 ```bash
-python research_assistant.py
+python research_reviewer.py --mode short
 ```
+
+The reviewer still executes all configured review stages and visual pages in Short mode; only inference depth is reduced.
 
 ---
 
@@ -3919,6 +4218,16 @@ Qwen3.5 answer stage
 ```
 
 This prevents the 27B vision model and the 35B answer model from unnecessarily competing for GPU/RAM at the same time.
+
+## Research Reviewer development/testing
+
+For the Reviewer, use Short mode when validating prompt changes, recovery logic, context packing, or end-to-end wiring:
+
+```bash
+python research_reviewer.py --short
+```
+
+Short mode does not skip review stages or pages; it disables reasoning and reduces inference budgets. Use the normal launcher/Full mode for the final publication-quality review.
 
 ## If Deep Research is too slow
 
@@ -4158,6 +4467,8 @@ Important artifacts include:
 ```text
 session.json
 review_progress.json
+context_pack.json
+context_pack.md
 micro_review.md
 technical_review.md
 equation_review.md
@@ -4581,6 +4892,22 @@ For the current RTX 5000 Ada 16 GB reference system, QwQ 32B may be CPU/GPU offl
 
 The reviewer keeps the full context during timeout recovery. It reduces context only for explicit context-size or memory errors.
 
+For normal generation-length stalls, v13 also uses proactive smart context packing. If the log shows:
+
+```text
+context-constrained generation detected
+```
+
+the reviewer has identified a prompt/context bottleneck and will compact the source payload while keeping the configured context window.
+
+For quick development/testing, use Short mode:
+
+```bash
+python research_reviewer.py --short
+```
+
+Short mode keeps every review stage/page but disables thinking and reduces context/output/time budgets. Use Full mode for the final publication-quality pass.
+
 ## Research Reviewer PDF does not appear in the menu
 
 Check:
@@ -4905,10 +5232,22 @@ Place the PDF under:
 reviewer PDFs/
 ```
 
-Start:
+Start a normal Full review:
 
 ```bash
 ./run_research_reviewer.sh
+```
+
+For a much faster complete-pipeline development run:
+
+```bash
+python research_reviewer.py --short
+```
+
+or:
+
+```bash
+python research_reviewer.py --mode short
 ```
 
 Choose:
@@ -5164,4 +5503,4 @@ The important architectural rule is:
 
 > **Deep Research creates durable evidence; the Research Assistant uses that evidence interactively.**
 
-The two applications, therefore, complement rather than duplicate each other.
+The three applications therefore complement rather than duplicate each other.
