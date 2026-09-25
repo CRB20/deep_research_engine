@@ -388,6 +388,17 @@ REVIEW_REPEAT_PENALTY_2 = max(REVIEW_REPEAT_PENALTY_1, float(os.getenv("REVIEW_R
 REVIEW_REPEAT_FALLBACK_PENALTY = max(1.0, float(os.getenv("REVIEW_REPEAT_FALLBACK_PENALTY", "1.10")))
 REVIEW_REPEAT_LAST_N = max(0, int(os.getenv("REVIEW_REPEAT_LAST_N", "128")))
 REVIEW_REPEAT_FALLBACK_TOKEN_MULTIPLIER = max(1.0, float(os.getenv("REVIEW_REPEAT_FALLBACK_TOKEN_MULTIPLIER", "1.5")))
+
+# Micro-review stage resilience. After all per-request fallbacks are exhausted,
+# the review continues when one or two micro chunks fail. Failed chunks are recorded
+# explicitly and surfaced to downstream coordinator/final-arbiter stages.
+REVIEW_MAX_MICRO_FAILURES_BEFORE_ABORT = max(0, int(os.getenv("REVIEW_MAX_MICRO_FAILURES_BEFORE_ABORT", "2")))
+REVIEW_ABORT_ON_MICRO_FAILURES = os.getenv("REVIEW_ABORT_ON_MICRO_FAILURES", "true").lower() in {"1", "true", "yes", "on"}
+# Independent specialist-stage resilience. After all per-request fallbacks are exhausted,
+# an individual foundational specialist failure is recorded and the pipeline continues.
+# The coordinator/final-arbiter stages remain fail-fast because they are aggregation stages.
+REVIEW_MAX_SPECIALIST_FAILURES_BEFORE_ABORT = max(0, int(os.getenv("REVIEW_MAX_SPECIALIST_FAILURES_BEFORE_ABORT", "2")))
+REVIEW_ABORT_ON_SPECIALIST_FAILURES = os.getenv("REVIEW_ABORT_ON_SPECIALIST_FAILURES", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_OLLAMA_BACKOFF_INITIAL_SECONDS = max(0.0, float(os.getenv("REVIEW_OLLAMA_BACKOFF_INITIAL_SECONDS", "5")))
 REVIEW_OLLAMA_BACKOFF_MAX_SECONDS = max(REVIEW_OLLAMA_BACKOFF_INITIAL_SECONDS, float(os.getenv("REVIEW_OLLAMA_BACKOFF_MAX_SECONDS", "60")))
 REVIEW_OLLAMA_HEALTH_TIMEOUT_SECONDS = max(1.0, float(os.getenv("REVIEW_OLLAMA_HEALTH_TIMEOUT_SECONDS", "10")))
@@ -439,20 +450,20 @@ REVIEW_CONTEXT_SUMMARY_CTX = max(4096, int(os.getenv("REVIEW_CONTEXT_SUMMARY_CTX
 REVIEW_CONTEXT_SUMMARY_TOKENS = max(800, int(os.getenv("REVIEW_CONTEXT_SUMMARY_TOKENS", "2200")))
 REVIEW_CONTEXT_SUMMARY_INPUT_CHARS = max(12000, int(os.getenv("REVIEW_CONTEXT_SUMMARY_INPUT_CHARS", "60000")))
 REVIEW_CONTEXT_REUSE = os.getenv("REVIEW_CONTEXT_REUSE", "true").lower() in {"1", "true", "yes", "on"}
-REVIEW_CONTEXT_PACK_VERSION = "v1"
+REVIEW_CONTEXT_PACK_VERSION = "v2"
 REVIEW_FULL_PROACTIVE_CONTEXT = os.getenv("REVIEW_FULL_PROACTIVE_CONTEXT", "true").lower() in {"1", "true", "yes", "on"}
 REVIEW_FULL_SOURCE_TARGET_GENERAL = max(8000, int(os.getenv("REVIEW_FULL_SOURCE_TARGET_GENERAL", "28000")))
 REVIEW_FULL_SOURCE_TARGET_CRITICAL = max(10000, int(os.getenv("REVIEW_FULL_SOURCE_TARGET_CRITICAL", "36000")))
 REVIEW_FULL_SOURCE_TARGET_COORDINATOR = max(10000, int(os.getenv("REVIEW_FULL_SOURCE_TARGET_COORDINATOR", "32000")))
 REVIEW_SHORT_SOURCE_TARGET_GENERAL = max(5000, int(os.getenv("REVIEW_SHORT_SOURCE_TARGET_GENERAL", "12000")))
-REVIEW_SHORT_SOURCE_TARGET_CRITICAL = max(6000, int(os.getenv("REVIEW_SHORT_SOURCE_TARGET_CRITICAL", "16000")))
+REVIEW_SHORT_SOURCE_TARGET_CRITICAL = max(6000, int(os.getenv("REVIEW_SHORT_SOURCE_TARGET_CRITICAL", "10000")))
 REVIEW_SHORT_SOURCE_TARGET_COORDINATOR = max(7000, int(os.getenv("REVIEW_SHORT_SOURCE_TARGET_COORDINATOR", "14000")))
 REVIEW_SHORT_CONTEXT_SUMMARY_TOKENS = max(600, int(os.getenv("REVIEW_SHORT_CONTEXT_SUMMARY_TOKENS", "1600")))
-REVIEW_SHORT_LLM_MAX_TOKENS = max(1200, int(os.getenv("REVIEW_SHORT_LLM_MAX_TOKENS", "3200")))
+REVIEW_SHORT_LLM_MAX_TOKENS = max(1200, int(os.getenv("REVIEW_SHORT_LLM_MAX_TOKENS", "3800")))
 REVIEW_SHORT_GENERAL_CTX = max(4096, int(os.getenv("REVIEW_SHORT_GENERAL_CTX", "8192")))
 REVIEW_SHORT_GENERAL_TOKENS = max(800, int(os.getenv("REVIEW_SHORT_GENERAL_TOKENS", "2200")))
 REVIEW_SHORT_CRITICAL_CTX = max(8192, int(os.getenv("REVIEW_SHORT_CRITICAL_CTX", "12288")))
-REVIEW_SHORT_CRITICAL_TOKENS = max(1000, int(os.getenv("REVIEW_SHORT_CRITICAL_TOKENS", "3000")))
+REVIEW_SHORT_CRITICAL_TOKENS = max(1000, int(os.getenv("REVIEW_SHORT_CRITICAL_TOKENS", "3600")))
 REVIEW_SHORT_VISION_CTX = max(4096, int(os.getenv("REVIEW_SHORT_VISION_CTX", "8192")))
 REVIEW_SHORT_VISION_TOKENS = max(600, int(os.getenv("REVIEW_SHORT_VISION_TOKENS", "1400")))
 REVIEW_SHORT_COORDINATOR_CTX = max(8192, int(os.getenv("REVIEW_SHORT_COORDINATOR_CTX", "12288")))
@@ -1636,6 +1647,24 @@ def crossref_lookup(reference: str) -> dict[str, Any]:
 # -----------------------------------------------------------------------------
 def run_micro_review(chunks: list[dict[str, Any]], document_type: str, session_dir: Path) -> str:
     results: list[str] = []
+    failures: list[dict[str, Any]] = []
+    result_path = session_dir / "micro_review.md"
+    failure_path = session_dir / "micro_review_failures.json"
+
+    def persist_partial() -> None:
+        joined = "\n\n".join(
+            f"===== MICRO REVIEW {i+1} =====\n{x}" for i, x in enumerate(results)
+        )
+        save_text(result_path, joined)
+        save_json(failure_path, {
+            "stage": "micro_review",
+            "total_chunks": len(chunks),
+            "completed_chunks": len(results) - len(failures),
+            "failed_chunks": len(failures),
+            "failures": failures,
+            "status": "partial" if failures else "completed",
+        })
+
     for idx, chunk in enumerate(chunks, start=1):
         prompt = f"""
 You are the LINE-AND-PARAGRAPH REVIEWER in a rigorous academic document review.
@@ -1672,10 +1701,73 @@ CHUNK {idx}/{len(chunks)}
 SOURCE:
 {chunk['text']}
 """
-        results.append(ollama_chat(REVIEW_GENERAL_MODEL, prompt, ctx=REVIEW_GENERAL_CTX, tokens=REVIEW_GENERAL_TOKENS, label=f"micro review {idx}/{len(chunks)}", think=REVIEW_MICRO_THINK))
-    joined = "\n\n".join(f"===== MICRO REVIEW {i+1} =====\n{x}" for i, x in enumerate(results))
-    save_text(session_dir / "micro_review.md", joined)
-    return joined
+        try:
+            out = ollama_chat(
+                REVIEW_GENERAL_MODEL, prompt, ctx=REVIEW_GENERAL_CTX,
+                tokens=REVIEW_GENERAL_TOKENS,
+                label=f"micro review {idx}/{len(chunks)}",
+                think=REVIEW_MICRO_THINK,
+            )
+            results.append(out)
+        except Exception as exc:
+            failure = {
+                "chunk": idx,
+                "chunk_id": chunk.get("id", idx),
+                "pages": chunk.get("pages", []),
+                "status": "failed",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "recovery_exhausted": True,
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+            }
+            failures.append(failure)
+            results.append(
+                "[MICRO REVIEW UNAVAILABLE]\n"
+                f"Chunk: {idx}/{len(chunks)}\n"
+                f"Pages: {chunk.get('pages', [])}\n"
+                f"Reason: {type(exc).__name__}: {exc}\n"
+                "All configured per-request recovery paths were exhausted. "
+                "This chunk was not successfully reviewed and must not be treated as a clean pass."
+            )
+            log(
+                "REVIEW",
+                f"Micro review {idx}/{len(chunks)} failed after all recovery paths; continuing. "
+                f"Failure {len(failures)}/{REVIEW_MAX_MICRO_FAILURES_BEFORE_ABORT if REVIEW_ABORT_ON_MICRO_FAILURES else 'unbounded'} | {type(exc).__name__}: {exc}",
+                "yellow",
+            )
+            persist_partial()
+
+            if REVIEW_ABORT_ON_MICRO_FAILURES and len(failures) > REVIEW_MAX_MICRO_FAILURES_BEFORE_ABORT:
+                log(
+                    "ERROR",
+                    f"Micro-review failure ceiling exceeded: {len(failures)} failures > "
+                    f"allowed {REVIEW_MAX_MICRO_FAILURES_BEFORE_ABORT}. Aborting review for coverage safety.",
+                    "red",
+                )
+                raise RuntimeError(
+                    f"Micro-review failure ceiling exceeded: {len(failures)} failures; "
+                    f"allowed {REVIEW_MAX_MICRO_FAILURES_BEFORE_ABORT}. See {failure_path.name}."
+                ) from exc
+            continue
+
+        persist_partial()
+
+    status = "completed_with_failures" if failures else "completed"
+    save_json(failure_path, {
+        "stage": "micro_review",
+        "total_chunks": len(chunks),
+        "completed_chunks": len(chunks) - len(failures),
+        "failed_chunks": len(failures),
+        "failures": failures,
+        "status": status,
+    })
+    if failures:
+        log(
+            "REVIEW",
+            f"Micro review stage completed with {len(failures)} unavailable chunk(s); downstream stages will continue.",
+            "yellow",
+        )
+    return "\n\n".join(f"===== MICRO REVIEW {i+1} =====\n{x}" for i, x in enumerate(results))
 
 
 def run_section_quality_review(document_type: str, outline: str, chunks: list[dict[str, Any]], micro_review: str, session_dir: Path) -> str:
@@ -2340,6 +2432,9 @@ Return ONLY JSON in this form:
   ]
 }}
 
+REVIEW COVERAGE / UNAVAILABLE PASSES:
+{((session_dir / "review_coverage.json").read_text(encoding="utf-8") if (session_dir / "review_coverage.json").exists() else "No explicit coverage exceptions recorded.")}
+
 SPECIALIST REPORTS:
 {reports}
 """
@@ -2364,6 +2459,9 @@ def run_final_arbiter(session_dir: Path, session: ReviewSession) -> str:
         "coordinator_round_1.md", "coordinator_round_2.md",
     ]
     evidence = []
+    coverage_path = session_dir / "review_coverage.json"
+    if coverage_path.exists():
+        evidence.append(f"\n===== REVIEW COVERAGE =====\n{coverage_path.read_text(encoding='utf-8')[:12000]}")
     for name in files:
         p = session_dir / name
         if p.exists():
@@ -2382,6 +2480,10 @@ Document:
 {session.pdf_path}
 Type: {session.document_type}
 Pages: {session.pages}
+
+IMPORTANT COVERAGE RULE:
+Any specialist or micro-review marked unavailable in REVIEW COVERAGE was not successfully completed.
+Do not infer a clean result for missing coverage. Explicitly disclose unavailable passes in the final review.
 
 Your review must contain these sections:
 1. EXECUTIVE ASSESSMENT
@@ -2845,17 +2947,96 @@ def run_initial_review(session: ReviewSession, session_dir: Path) -> str:
 
     # Base specialist passes. They are intentionally explicit so every document gets
     # the same foundational checks before the coordinator decides on adaptive re-review.
-    def run_stage(name: str, fn):
+    # Independent specialist failures are isolated: all configured per-request recovery
+    # happens first inside ollama_chat; if that still fails, the specialist is recorded as
+    # unavailable and the downstream pipeline continues until the configured stage-failure ceiling.
+    specialist_failure_records: list[dict[str, Any]] = []
+
+    def _record_specialist_failure(name: str, exc: Exception) -> str:
+        safe_name = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "specialist"
+        record = {
+            "stage": name,
+            "status": "failed",
+            "updated": datetime.now().isoformat(timespec="seconds"),
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+        specialist_failure_records.append(record)
+        save_json(session_dir / "specialist_failures.json", {
+            "mode": ACTIVE_MODE,
+            "failed_count": len(specialist_failure_records),
+            "failures": specialist_failure_records,
+        })
+        save_text(
+            session_dir / f"{safe_name}_failure.md",
+            "\n".join([
+                f"# {name} — Specialist Unavailable",
+                "",
+                "The specialist exhausted its configured recovery paths and did not produce a complete report.",
+                "",
+                f"- Status: FAILED",
+                f"- Error type: {type(exc).__name__}",
+                f"- Error: {exc}",
+                "",
+                "This failure must not be interpreted as a successful clean review. Downstream aggregation stages are informed that this specialist evidence is unavailable.",
+            ]),
+        )
+        limit = REVIEW_MAX_SPECIALIST_FAILURES_BEFORE_ABORT if REVIEW_ABORT_ON_SPECIALIST_FAILURES else "unbounded"
+        log(
+            "REVIEW",
+            f"Specialist '{name}' failed after all recovery paths; continuing. Failure {len(specialist_failure_records)}/{limit} | {type(exc).__name__}: {exc}",
+            "yellow",
+        )
+        if REVIEW_ABORT_ON_SPECIALIST_FAILURES and len(specialist_failure_records) > REVIEW_MAX_SPECIALIST_FAILURES_BEFORE_ABORT:
+            raise RuntimeError(
+                f"Specialist failure ceiling exceeded: {len(specialist_failure_records)} failures; "
+                f"allowed {REVIEW_MAX_SPECIALIST_FAILURES_BEFORE_ABORT}. Aborting review for coverage safety."
+            )
+        return (
+            f"[UNAVAILABLE SPECIALIST: {name}]\n"
+            f"This specialist exhausted all configured recovery paths and did not complete.\n"
+            f"Error: {type(exc).__name__}: {exc}\n"
+            "Do not interpret the missing specialist report as evidence that no issue exists."
+        )
+
+    def run_stage(name: str, fn, *, continue_on_failure: bool = True):
         _update_review_stage(session_dir, name, "running")
         try:
             result = fn()
-            _update_review_stage(session_dir, name, "completed")
+            if name == "micro_review":
+                failure_file = session_dir / "micro_review_failures.json"
+                try:
+                    coverage = json.loads(failure_file.read_text(encoding="utf-8")) if failure_file.exists() else {}
+                except Exception:
+                    coverage = {}
+                failed_count = int(coverage.get("failed_chunks", 0) or 0)
+                if failed_count:
+                    _update_review_stage(
+                        session_dir, name, "completed_with_failures",
+                        detail=f"{failed_count} micro chunk(s) unavailable; explicit failure records saved."
+                    )
+                else:
+                    _update_review_stage(session_dir, name, "completed")
+            else:
+                _update_review_stage(session_dir, name, "completed")
             return result
         except Exception as exc:
             _update_review_stage(session_dir, name, "failed", detail=str(exc))
+            if continue_on_failure:
+                return _record_specialist_failure(name, exc)
             raise
 
     micro = run_stage("micro_review", lambda: run_micro_review(chunks, session.document_type, session_dir))
+    try:
+        micro_coverage = json.loads((session_dir / "micro_review_failures.json").read_text(encoding="utf-8"))
+    except Exception:
+        micro_coverage = {"stage": "micro_review", "status": "unknown", "failed_chunks": 0, "failures": []}
+    save_json(session_dir / "review_coverage.json", {
+        "mode": ACTIVE_MODE,
+        "micro_review": micro_coverage,
+        "specialist_failures": specialist_failure_records,
+        "note": "Unavailable specialist chunks/stages are explicitly marked and must not be interpreted as successful review coverage.",
+    })
     section = run_stage("section_quality", lambda: run_section_quality_review(session.document_type, outline, chunks, micro, session_dir))
     technical = run_stage("technical_review", lambda: run_technical_review(session.document_type, chunks, session_dir))
     visual = run_stage("visual_review", lambda: run_visual_review(pages, session_dir))
@@ -2873,6 +3054,16 @@ def run_initial_review(session: ReviewSession, session_dir: Path) -> str:
     experimental = run_stage("experimental_design_review", lambda: run_experimental_design_review(session.document_type, pages, session_dir))
     venue = run_stage("venue_review", lambda: run_venue_review(session.document_type, outline, session_dir))
     front = run_stage("front_matter_review", lambda: run_front_matter_review(pages, session_dir))
+    save_json(session_dir / "review_coverage.json", {
+        "mode": ACTIVE_MODE,
+        "micro_review": micro_coverage,
+        "specialist_failures": specialist_failure_records,
+        "specialist_failure_count": len(specialist_failure_records),
+        "specialist_failure_limit": REVIEW_MAX_SPECIALIST_FAILURES_BEFORE_ABORT if REVIEW_ABORT_ON_SPECIALIST_FAILURES else None,
+        "note": "Unavailable specialist chunks/stages are explicitly marked and must not be interpreted as successful review coverage.",
+    })
+    if specialist_failure_records:
+        log("REVIEW", f"Initial specialist stage completed with {len(specialist_failure_records)} unavailable specialist stage(s); downstream coordination will continue with explicit failure records.", "yellow")
     _ = section, technical, equation, data, statistical, style, language, ai_style, nomenclature, citation, literature, novelty, reproducibility, experimental, venue, front
 
     # Adaptive coordination loop. The coordinator reads specialist evidence, selects
